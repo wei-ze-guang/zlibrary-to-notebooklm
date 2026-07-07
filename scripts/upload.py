@@ -12,6 +12,11 @@ import time
 import re
 from pathlib import Path
 
+try:
+    from scripts.browser import choose_chromium_launch_options
+except ImportError:
+    from browser import choose_chromium_launch_options
+
 
 def get_async_playwright():
     try:
@@ -126,12 +131,16 @@ class ZLibraryAutoUploader:
         async with get_async_playwright()() as p:
             # 启动浏览器（使用持久化上下文）
             print("🚀 启动浏览器...")
+            launch_choice = choose_chromium_launch_options(p.chromium)
+            if launch_choice.log:
+                print(f"ℹ️  {launch_choice.log}")
 
             browser = await p.chromium.launch_persistent_context(
                 user_data_dir=str(self.config_dir / "browser_profile"),
                 headless=False,
                 accept_downloads=True,
-                args=['--disable-blink-features=AutomationControlled']
+                args=['--disable-blink-features=AutomationControlled'],
+                **launch_choice.options,
             )
 
             page = browser.pages[0] if browser.pages else await browser.new_page()

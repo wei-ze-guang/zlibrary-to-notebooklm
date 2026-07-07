@@ -14,6 +14,11 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import quote, urljoin
 
+try:
+    from scripts.browser import choose_chromium_launch_options
+except ImportError:
+    from browser import choose_chromium_launch_options
+
 
 DEFAULT_BASE_URL = "https://zh.zlib.li"
 
@@ -239,10 +244,14 @@ async def search_zlibrary(query: str, limit: int = 10, base_url: str = DEFAULT_B
     print(f"地址: {search_url}")
 
     async with get_async_playwright()() as p:
+        launch_choice = choose_chromium_launch_options(p.chromium)
+        if launch_choice.log:
+            print(f"ℹ️  {launch_choice.log}")
         browser = await p.chromium.launch_persistent_context(
             user_data_dir=str(config_dir / "browser_profile"),
             headless=False,
             args=["--disable-blink-features=AutomationControlled"],
+            **launch_choice.options,
         )
         page = browser.pages[0] if browser.pages else await browser.new_page()
         page.set_default_timeout(60000)

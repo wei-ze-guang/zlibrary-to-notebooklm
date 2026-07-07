@@ -9,9 +9,11 @@ import asyncio
 import contextlib
 import io
 import json
+import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,12 +27,20 @@ if str(ROOT_DIR) not in sys.path:
 
 from scripts.search import search_zlibrary
 from scripts.upload import ZLibraryAutoUploader
+from scripts.browser import choose_chromium_launch_options, choose_system_browser_channel
 
 
 WEB_DIST_DIR = ROOT_DIR / "web" / "dist"
 WEB_PUBLIC_DIR = ROOT_DIR / "web"
+ZLIBRARY_LOGIN_TIMEOUT_SECONDS = 15 * 60
 TASKS: dict[str, "UploadTask"] = {}
 TASKS_LOCK = threading.Lock()
+ZLIBRARY_LOGIN_LOCK = threading.RLock()
+ZLIBRARY_LOGIN_SESSION: "ZLibraryLoginSession | None" = None
+NOTEBOOKLM_LOGIN_LOCK = threading.RLock()
+NOTEBOOKLM_LOGIN_PROCESS: subprocess.Popen[str] | None = None
+NOTEBOOKLM_STATUS_CACHE_LOCK = threading.Lock()
+NOTEBOOKLM_STATUS_CACHE: dict[str, Any] | None = None
 
 
 class BadRequest(ValueError):
@@ -47,6 +57,134 @@ class UploadTask:
     logs: list[str] = field(default_factory=list)
     result: dict[str, Any] | None = None
     error: str | None = None
+
+
+class ZLibraryLoginSession:
+    def __init__(self, timeout_seconds: int = ZLIBRARY_LOGIN_TIMEOUT_SECONDS):
+        self.id = uuid.uuid4().hex
+        self.status = "starting"
+        self.logs = ["正在打开 Z-Library 登录窗口"]
+        self.error: str | None = None
+        self.started_at = time.time()
+        self.updated_at = self.started_at
+        self.timeout_seconds = timeout_seconds
+        self._save_requested = threading.Event()
+        self._cancel_requested = threading.Event()
+        self._lock = threading.Lock()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def is_active(self) -> bool:
+        with self._lock:
+            return self.status in {"starting", "waiting", "saving"}
+
+    def request_save(self) -> None:
+        with self._lock:
+            if self.status not in {"starting", "waiting"}:
+                raise BadRequest("当前没有可保存的 Z-Library 登录窗口")
+            self.status = "saving"
+            self.logs.append("收到保存会话请求")
+            self.updated_at = time.time()
+        self._save_requested.set()
+
+    def request_cancel(self) -> None:
+        with self._lock:
+            if self.status not in {"starting", "waiting", "saving"}:
+                return
+            self.status = "cancelled"
+            self.logs.append("登录流程已取消")
+            self.updated_at = time.time()
+        self._cancel_requested.set()
+
+    def serialize(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "id": self.id,
+                "status": self.status,
+                "logs": list(self.logs),
+                "error": self.error,
+                "started_at": self.started_at,
+                "updated_at": self.updated_at,
+            }
+
+    def _set_status(self, status: str, log: str | None = None, error: str | None = None) -> None:
+        with self._lock:
+            self.status = status
+            if log:
+                self.logs.append(log)
+            if error:
+                self.error = error
+            self.updated_at = time.time()
+
+    def _run(self) -> None:
+        browser = None
+        try:
+            try:
+                from playwright.sync_api import sync_playwright
+            except ImportError as exc:
+                raise RuntimeError(
+                    f"Playwright 未安装。请在当前后端 Python 环境运行: {sys.executable} -m pip install -r requirements.txt"
+                ) from exc
+
+            config_dir = zlibrary_config_dir()
+            config_dir.mkdir(parents=True, exist_ok=True)
+            config_dir.chmod(0o700)
+
+            with sync_playwright() as playwright:
+                launch_choice = choose_chromium_launch_options(playwright.chromium)
+                if launch_choice.log:
+                    self._set_status("starting", launch_choice.log)
+                browser = playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(config_dir / "browser_profile"),
+                    headless=False,
+                    args=["--disable-blink-features=AutomationControlled"],
+                    **launch_choice.options,
+                )
+                page = browser.pages[0] if browser.pages else browser.new_page()
+                page.goto("https://zh.zlib.li/", wait_until="domcontentloaded", timeout=30000)
+                self._set_status("waiting", "浏览器已打开，请在弹出的窗口中完成 Z-Library 登录")
+
+                deadline = time.time() + self.timeout_seconds
+                while time.time() < deadline:
+                    if self._cancel_requested.is_set():
+                        self._set_status("cancelled", "浏览器窗口已关闭")
+                        return
+                    if self._save_requested.wait(timeout=0.5):
+                        storage_state = zlibrary_storage_state_path()
+                        browser.storage_state(path=str(storage_state))
+                        storage_state.chmod(0o600)
+                        self._set_status("completed", f"会话已保存: {storage_state}")
+                        return
+
+                self._set_status("failed", "登录窗口已超时，请重新发起登录", "登录窗口已超时，请重新发起登录")
+        except Exception as exc:
+            message = format_zlibrary_login_error(exc)
+            self._set_status("failed", error=message, log=f"登录失败: {message}")
+        finally:
+            if browser is not None:
+                with contextlib.suppress(Exception):
+                    browser.close()
+
+
+def format_zlibrary_login_error(error: Exception) -> str:
+    message = str(error)
+    if (
+        "Executable doesn't exist" in message
+        or "playwright install" in message
+        or "没有找到 Playwright Chromium" in message
+    ):
+        return (
+            "没有找到可用浏览器，无法弹出登录窗口。"
+            f"请运行: {sys.executable} -m playwright install chromium"
+        )
+    if "No module named 'playwright'" in message:
+        return (
+            "Playwright 未安装，无法弹出登录窗口。"
+            f"请运行: {sys.executable} -m pip install -r requirements.txt"
+        )
+    return message
 
 
 def parse_notebooks(stdout: str) -> list[dict[str, str]]:
@@ -101,17 +239,266 @@ def serialize_task(task: UploadTask) -> dict[str, Any]:
     }
 
 
-def run_notebooklm(args: list[str]) -> subprocess.CompletedProcess[str]:
+def zlibrary_config_dir() -> Path:
+    return Path.home() / ".zlibrary"
+
+
+def zlibrary_storage_state_path() -> Path:
+    return zlibrary_config_dir() / "storage_state.json"
+
+
+def get_current_zlibrary_login_session() -> ZLibraryLoginSession | None:
+    with ZLIBRARY_LOGIN_LOCK:
+        return ZLIBRARY_LOGIN_SESSION
+
+
+def get_zlibrary_auth_status() -> dict[str, Any]:
+    storage_state = zlibrary_storage_state_path()
+    session = get_current_zlibrary_login_session()
+    saved = storage_state.exists() and storage_state.stat().st_size > 0
+    status = "saved" if saved else "missing"
+    message = "已保存 Z-Library 会话" if saved else "未保存 Z-Library 会话"
+
+    if session and session.is_active():
+        status = session.serialize()["status"]
+        message = "Z-Library 登录窗口已打开，请在浏览器完成登录"
+    elif session and session.serialize()["status"] == "failed":
+        status = "failed"
+        message = session.serialize().get("error") or "Z-Library 登录失败"
+
+    return {
+        "logged_in": saved,
+        "status": status,
+        "message": message,
+        "storage_state": str(storage_state),
+        "session": session.serialize() if session else None,
+    }
+
+
+def start_zlibrary_login() -> dict[str, Any]:
+    global ZLIBRARY_LOGIN_SESSION
+    with ZLIBRARY_LOGIN_LOCK:
+        if ZLIBRARY_LOGIN_SESSION and ZLIBRARY_LOGIN_SESSION.is_active():
+            return get_zlibrary_auth_status()
+        ZLIBRARY_LOGIN_SESSION = ZLibraryLoginSession()
+        ZLIBRARY_LOGIN_SESSION.start()
+    return get_zlibrary_auth_status()
+
+
+def complete_zlibrary_login() -> dict[str, Any]:
+    session = get_current_zlibrary_login_session()
+    if not session:
+        raise BadRequest("没有正在进行的 Z-Library 登录流程")
+    session.request_save()
+    return get_zlibrary_auth_status()
+
+
+def cancel_zlibrary_login() -> dict[str, Any]:
+    session = get_current_zlibrary_login_session()
+    if session:
+        session.request_cancel()
+    return get_zlibrary_auth_status()
+
+
+def resolve_notebooklm_command() -> str | None:
+    command = shutil.which("notebooklm")
+    if command:
+        return command
+
+    sibling_command = Path(sys.executable).with_name("notebooklm")
+    if sibling_command.is_file():
+        return str(sibling_command)
+
+    return None
+
+
+def notebooklm_command_available() -> bool:
+    return resolve_notebooklm_command() is not None
+
+
+def cache_notebooklm_auth_status(status: dict[str, Any]) -> dict[str, Any]:
+    global NOTEBOOKLM_STATUS_CACHE
+    with NOTEBOOKLM_STATUS_CACHE_LOCK:
+        NOTEBOOKLM_STATUS_CACHE = dict(status)
+    return status
+
+
+def get_cached_notebooklm_auth_status() -> dict[str, Any]:
+    login_process = get_notebooklm_login_process_state()
+    with NOTEBOOKLM_STATUS_CACHE_LOCK:
+        cached = dict(NOTEBOOKLM_STATUS_CACHE) if NOTEBOOKLM_STATUS_CACHE else None
+
+    if cached:
+        cached["login_process"] = login_process
+        return cached
+
+    if not notebooklm_command_available():
+        return {
+            "installed": False,
+            "logged_in": False,
+            "status": "missing",
+            "message": "未找到 notebooklm 命令，请先安装 NotebookLM CLI",
+            "login_process": login_process,
+        }
+
+    return {
+        "installed": True,
+        "logged_in": False,
+        "status": "unchecked",
+        "message": "NotebookLM 状态尚未刷新",
+        "login_process": login_process,
+    }
+
+
+def get_notebooklm_login_process_state() -> dict[str, Any] | None:
+    with NOTEBOOKLM_LOGIN_LOCK:
+        process = NOTEBOOKLM_LOGIN_PROCESS
+    if not process:
+        return None
+
+    returncode = process.poll()
+    if returncode is None:
+        return {"status": "running", "returncode": None}
+    return {"status": "exited", "returncode": returncode}
+
+
+def run_notebooklm(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
+    command = resolve_notebooklm_command()
+    if not command:
+        raise RuntimeError("未找到 notebooklm 命令，请先安装并运行 notebooklm login")
+
     try:
         return subprocess.run(
-            ["notebooklm", *args],
+            [command, *args],
             cwd=ROOT_DIR,
             capture_output=True,
             text=True,
             check=False,
+            timeout=timeout,
         )
     except FileNotFoundError as exc:
         raise RuntimeError("未找到 notebooklm 命令，请先安装并运行 notebooklm login") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("notebooklm 命令执行超时，请确认 CLI 没有卡在登录或网络请求中") from exc
+
+
+def get_notebooklm_auth_status() -> dict[str, Any]:
+    login_process = get_notebooklm_login_process_state()
+    if not notebooklm_command_available():
+        return cache_notebooklm_auth_status({
+            "installed": False,
+            "logged_in": False,
+            "status": "missing",
+            "message": "未找到 notebooklm 命令，请先安装 NotebookLM CLI",
+            "login_process": login_process,
+        })
+
+    if login_process and login_process["status"] == "running":
+        return cache_notebooklm_auth_status({
+            "installed": True,
+            "logged_in": False,
+            "status": "login_running",
+            "message": "NotebookLM 登录流程已启动，请在弹出的浏览器或终端提示中完成登录",
+            "login_process": login_process,
+        })
+
+    try:
+        result = run_notebooklm(["list", "--json"], timeout=8)
+    except RuntimeError as exc:
+        return cache_notebooklm_auth_status({
+            "installed": True,
+            "logged_in": False,
+            "status": "error",
+            "message": str(exc),
+            "login_process": login_process,
+        })
+
+    if result.returncode == 0:
+        try:
+            notebooks = parse_notebooks(result.stdout)
+        except Exception:
+            notebooks = []
+        return cache_notebooklm_auth_status({
+            "installed": True,
+            "logged_in": True,
+            "status": "ready",
+            "message": "NotebookLM CLI 已登录",
+            "notebooks_count": len(notebooks),
+            "login_process": login_process,
+        })
+
+    message = result.stderr.strip() or result.stdout.strip() or "NotebookLM CLI 尚未登录"
+    return cache_notebooklm_auth_status({
+        "installed": True,
+        "logged_in": False,
+        "status": "not_logged_in",
+        "message": message,
+        "login_process": login_process,
+    })
+
+
+def start_notebooklm_login() -> dict[str, Any]:
+    global NOTEBOOKLM_LOGIN_PROCESS
+    command = resolve_notebooklm_command()
+    if not command:
+        raise RuntimeError("未找到 notebooklm 命令，请先安装 NotebookLM CLI")
+
+    with NOTEBOOKLM_LOGIN_LOCK:
+        if NOTEBOOKLM_LOGIN_PROCESS and NOTEBOOKLM_LOGIN_PROCESS.poll() is None:
+            return get_notebooklm_auth_status()
+        try:
+            login_command = [command, "login"]
+            browser_channel = choose_system_browser_channel()
+            if browser_channel:
+                channel, _label = browser_channel
+                login_command.extend(["--browser", channel])
+            NOTEBOOKLM_LOGIN_PROCESS = subprocess.Popen(
+                login_command,
+                cwd=ROOT_DIR,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError("未找到 notebooklm 命令，请先安装 NotebookLM CLI") from exc
+    return get_notebooklm_auth_status()
+
+
+def cancel_notebooklm_login() -> dict[str, Any]:
+    global NOTEBOOKLM_LOGIN_PROCESS
+    with NOTEBOOKLM_LOGIN_LOCK:
+        process = NOTEBOOKLM_LOGIN_PROCESS
+        NOTEBOOKLM_LOGIN_PROCESS = None
+
+    if process and process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+    installed = notebooklm_command_available()
+    return cache_notebooklm_auth_status({
+        "installed": installed,
+        "logged_in": False,
+        "status": "not_logged_in" if installed else "missing",
+        "message": "NotebookLM 登录流程已取消" if installed else "未找到 notebooklm 命令，请先安装 NotebookLM CLI",
+        "login_process": None,
+    })
+
+
+def get_auth_status(probe_notebooklm: bool = True) -> dict[str, Any]:
+    notebooklm_status = (
+        get_notebooklm_auth_status()
+        if probe_notebooklm
+        else get_cached_notebooklm_auth_status()
+    )
+    return {
+        "zlibrary": get_zlibrary_auth_status(),
+        "notebooklm": notebooklm_status,
+    }
 
 
 def list_notebooks() -> list[dict[str, str]]:
@@ -221,6 +608,10 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         try:
+            if parsed.path == "/api/auth/status":
+                json_response(self, 200, get_auth_status())
+                return
+
             if parsed.path == "/api/search":
                 params = parse_qs(parsed.query)
                 query = params.get("q", [""])[0].strip()
@@ -255,6 +646,31 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         try:
+            if parsed.path == "/api/auth/zlibrary/start":
+                start_zlibrary_login()
+                json_response(self, 202, get_auth_status(probe_notebooklm=False))
+                return
+
+            if parsed.path == "/api/auth/zlibrary/complete":
+                complete_zlibrary_login()
+                json_response(self, 202, get_auth_status(probe_notebooklm=False))
+                return
+
+            if parsed.path == "/api/auth/zlibrary/cancel":
+                cancel_zlibrary_login()
+                json_response(self, 200, get_auth_status(probe_notebooklm=False))
+                return
+
+            if parsed.path == "/api/auth/notebooklm/start":
+                start_notebooklm_login()
+                json_response(self, 202, get_auth_status())
+                return
+
+            if parsed.path == "/api/auth/notebooklm/cancel":
+                cancel_notebooklm_login()
+                json_response(self, 200, get_auth_status(probe_notebooklm=False))
+                return
+
             if parsed.path == "/api/notebooks":
                 body = read_json_body(self)
                 title = str(body.get("title", "")).strip()

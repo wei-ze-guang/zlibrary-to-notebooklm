@@ -1,6 +1,18 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { BookOpen, Database, Loader2, Plus, RefreshCcw, Search, UploadCloud } from "lucide-react";
+import {
+  AlertTriangle,
+  BookOpen,
+  CheckCircle2,
+  Database,
+  Loader2,
+  LogIn,
+  Plus,
+  RefreshCcw,
+  Search,
+  UploadCloud,
+  XCircle,
+} from "lucide-react";
 import "./styles.css";
 
 type SearchResult = {
@@ -22,22 +34,80 @@ type UploadTask = {
   result?: Record<string, unknown> | null;
 };
 
+type AuthSession = {
+  id: string;
+  status: string;
+  logs: string[];
+  error?: string | null;
+};
+
+type AuthStatus = {
+  zlibrary: {
+    logged_in: boolean;
+    status: string;
+    message: string;
+    storage_state: string;
+    session?: AuthSession | null;
+  };
+  notebooklm: {
+    installed: boolean;
+    logged_in: boolean;
+    status: string;
+    message: string;
+    notebooks_count?: number;
+    login_process?: { status: string; returncode: number | null } | null;
+  };
+};
+
+const BACKEND_UNAVAILABLE = "后端服务未启动：请运行 python3 scripts/web_api.py，或打开 http://127.0.0.1:7860";
+
+function backendUnavailableAuth(message = BACKEND_UNAVAILABLE): AuthStatus {
+  return {
+    zlibrary: {
+      logged_in: false,
+      status: "backend_unavailable",
+      message,
+      storage_state: "",
+      session: null,
+    },
+    notebooklm: {
+      installed: false,
+      logged_in: false,
+      status: "backend_unavailable",
+      message,
+      login_process: null,
+    },
+  };
+}
+
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      headers: { "Content-Type": "application/json" },
+      ...options,
+    });
+  } catch (error) {
+    if (path.startsWith("/api/")) {
+      throw new Error(BACKEND_UNAVAILABLE);
+    }
+    throw error;
+  }
   const contentType = response.headers.get("content-type") || "";
   const data = contentType.includes("application/json")
     ? await response.json()
     : { error: await response.text() };
   if (!response.ok) {
+    if (path.startsWith("/api/") && response.status >= 500 && !data.error) {
+      throw new Error(BACKEND_UNAVAILABLE);
+    }
     throw new Error(data.error || "请求失败");
   }
   return data;
 }
 
 function App() {
+  const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [query, setQuery] = useState("操作系统");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [notebooks, setNotebooks] = useState<Notebook[]>([]);
@@ -46,13 +116,60 @@ function App() {
   const [selectedBook, setSelectedBook] = useState<SearchResult | null>(null);
   const [task, setTask] = useState<UploadTask | null>(null);
   const [busy, setBusy] = useState("");
+  const [authBusy, setAuthBusy] = useState("");
   const [message, setMessage] = useState("");
 
+  const zlibraryReady = Boolean(auth?.zlibrary.logged_in);
+  const notebooklmReady = Boolean(auth?.notebooklm.logged_in);
+  const zlibraryLoginActive = ["starting", "waiting", "saving"].includes(auth?.zlibrary.session?.status || "");
+  const zlibraryFailed = auth?.zlibrary.status === "failed" || auth?.zlibrary.status === "backend_unavailable";
+  const notebooklmLoginRunning = auth?.notebooklm.status === "login_running";
+  const zlibraryCardState = zlibraryLoginActive ? "pending" : zlibraryFailed ? "problem" : zlibraryReady ? "ready" : "problem";
+
   const canUpload = useMemo(() => {
-    return Boolean(selectedBook && (selectedNotebookId || newNotebookTitle.trim()));
-  }, [selectedBook, selectedNotebookId, newNotebookTitle]);
+    return Boolean(zlibraryReady && notebooklmReady && selectedBook && (selectedNotebookId || newNotebookTitle.trim()));
+  }, [zlibraryReady, notebooklmReady, selectedBook, selectedNotebookId, newNotebookTitle]);
+
+  async function loadAuthStatus(silent = false) {
+    if (!silent) setAuthBusy("status");
+    try {
+      const data = await api<AuthStatus>("/api/auth/status");
+      setAuth(data);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "读取登录状态失败";
+      setAuth(backendUnavailableAuth(errorMessage));
+      setMessage(errorMessage);
+    } finally {
+      if (!silent) setAuthBusy("");
+    }
+  }
+
+  async function runAuthAction(path: string, busyKey: string, successMessage?: string) {
+    setAuthBusy(busyKey);
+    setMessage("");
+    try {
+      const data = await api<AuthStatus>(path, { method: "POST" });
+      setAuth(data);
+      if (successMessage) setMessage(successMessage);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "登录操作失败";
+      if (errorMessage.includes("后端服务未启动")) {
+        setAuth(backendUnavailableAuth(errorMessage));
+      }
+      setMessage(errorMessage);
+    } finally {
+      setAuthBusy("");
+    }
+  }
 
   async function loadNotebooks() {
+    if (auth && !auth.notebooklm.logged_in) {
+      setNotebooks([]);
+      setSelectedNotebookId("");
+      setMessage(auth.notebooklm.message || "请先登录 NotebookLM");
+      return;
+    }
+
     setBusy("notebooks");
     setMessage("");
     try {
@@ -71,6 +188,10 @@ function App() {
   async function searchBooks(event?: React.FormEvent) {
     event?.preventDefault();
     if (!query.trim()) return;
+    if (auth && !auth.zlibrary.logged_in) {
+      setMessage(auth.zlibrary.message || "请先登录 Z-Library");
+      return;
+    }
 
     setBusy("search");
     setMessage("");
@@ -90,6 +211,11 @@ function App() {
 
   async function createNotebook() {
     if (!newNotebookTitle.trim()) return;
+    if (auth && !auth.notebooklm.logged_in) {
+      setMessage(auth.notebooklm.message || "请先登录 NotebookLM");
+      return;
+    }
+
     setBusy("create");
     setMessage("");
     try {
@@ -109,6 +235,11 @@ function App() {
 
   async function uploadBook() {
     if (!selectedBook || !canUpload) return;
+    if (!zlibraryReady || !notebooklmReady) {
+      setMessage("请先完成 Z-Library 和 NotebookLM 登录");
+      return;
+    }
+
     setBusy("upload");
     setMessage("");
     try {
@@ -129,8 +260,22 @@ function App() {
   }
 
   useEffect(() => {
-    loadNotebooks();
+    loadAuthStatus();
   }, []);
+
+  useEffect(() => {
+    if (auth?.notebooklm.logged_in) {
+      loadNotebooks();
+    }
+  }, [auth?.notebooklm.logged_in]);
+
+  useEffect(() => {
+    if (!auth || (!zlibraryLoginActive && !notebooklmLoginRunning)) return;
+    const timer = window.setInterval(() => {
+      loadAuthStatus(true);
+    }, 1800);
+    return () => window.clearInterval(timer);
+  }, [auth?.zlibrary.session?.status, auth?.notebooklm.status]);
 
   useEffect(() => {
     if (!task?.id || task.status === "completed" || task.status === "failed") return;
@@ -155,8 +300,57 @@ function App() {
           <p className="hero-copy">搜索书籍，选择或创建 NotebookLM 知识库，然后把内容送进去。</p>
         </div>
         <div className="status-strip">
-          <span><Database size={18} /> NotebookLM CLI 本地连接</span>
-          <span><BookOpen size={18} /> Z-Library 本机会话复用</span>
+          <div className={`auth-card ${zlibraryCardState}`}>
+            <div className="auth-main">
+              {zlibraryCardState === "ready" ? <CheckCircle2 size={18} /> : zlibraryCardState === "pending" ? <Loader2 className="spin" size={18} /> : <AlertTriangle size={18} />}
+              <div>
+                <span>Z-Library 会话</span>
+                <small>{auth?.zlibrary.message || "正在读取状态..."}</small>
+              </div>
+            </div>
+            <div className="auth-actions">
+              {zlibraryLoginActive ? (
+                <>
+                  <button className="mini-button" onClick={() => runAuthAction("/api/auth/zlibrary/complete", "zlibrary-complete")} disabled={authBusy === "zlibrary-complete"}>
+                    完成登录
+                  </button>
+                  <button className="mini-button ghost" onClick={() => runAuthAction("/api/auth/zlibrary/cancel", "zlibrary-cancel")} disabled={authBusy === "zlibrary-cancel"}>
+                    取消
+                  </button>
+                </>
+              ) : (
+                <button className="mini-button" onClick={() => runAuthAction("/api/auth/zlibrary/start", "zlibrary-start")} disabled={authBusy === "zlibrary-start"}>
+                  {authBusy === "zlibrary-start" ? <Loader2 className="spin" size={14} /> : <LogIn size={14} />}
+                  {zlibraryReady ? "重新登录" : "登录"}
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className={`auth-card ${notebooklmReady ? "ready" : notebooklmLoginRunning ? "pending" : "problem"}`}>
+            <div className="auth-main">
+              {notebooklmReady ? <CheckCircle2 size={18} /> : notebooklmLoginRunning ? <Loader2 className="spin" size={18} /> : <XCircle size={18} />}
+              <div>
+                <span>NotebookLM CLI</span>
+                <small>{auth?.notebooklm.message || "正在读取状态..."}</small>
+              </div>
+            </div>
+            <div className="auth-actions">
+              {notebooklmLoginRunning ? (
+                <button className="mini-button ghost" onClick={() => runAuthAction("/api/auth/notebooklm/cancel", "notebooklm-cancel")} disabled={authBusy === "notebooklm-cancel"}>
+                  取消
+                </button>
+              ) : (
+                <button className="mini-button" onClick={() => runAuthAction("/api/auth/notebooklm/start", "notebooklm-start")} disabled={authBusy === "notebooklm-start" || auth?.notebooklm.installed === false}>
+                  {authBusy === "notebooklm-start" ? <Loader2 className="spin" size={14} /> : <LogIn size={14} />}
+                  {notebooklmReady ? "重新登录" : "登录"}
+                </button>
+              )}
+              <button className="mini-button ghost" onClick={() => loadAuthStatus()} disabled={authBusy === "status"}>
+                刷新
+              </button>
+            </div>
+          </div>
         </div>
       </section>
 
