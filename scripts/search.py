@@ -28,6 +28,12 @@ class SearchResult:
     title: str
     url: str
     details: str = ""
+    author: str = ""
+    publisher: str = ""
+    year: str = ""
+    extension: str = ""
+    filesize: str = ""
+    language: str = ""
 
 
 class HtmlNode:
@@ -172,6 +178,33 @@ def _extract_bookcard_details(bookcard) -> str:
     return ", ".join(values)
 
 
+def _extract_bookcard_metadata(bookcard) -> dict[str, str]:
+    metadata = {}
+    for attr in ("author", "publisher", "year", "extension", "filesize", "language"):
+        metadata[attr] = _clean_text(bookcard.get(attr) or "")
+    return metadata
+
+
+def _extract_metadata_from_text(text: str) -> dict[str, str]:
+    extension_match = re.search(r"\b(pdf|epub|mobi|azw3|djvu|fb2|txt|rtf|docx?|chm)\b", text, re.I)
+    filesize_match = re.search(r"\b\d+(?:\.\d+)?\s*(?:B|KB|MB|GB)\b", text, re.I)
+    year_match = re.search(r"\b(?:19|20)\d{2}\b", text)
+    language_match = re.search(
+        r"(中文|Chinese|英文|English|日文|日本語|Japanese|韩文|Korean|俄文|Russian|法文|French|德文|German|西班牙文|Spanish)",
+        text,
+        re.I,
+    )
+
+    return {
+        "author": "",
+        "publisher": "",
+        "year": year_match.group(0) if year_match else "",
+        "extension": extension_match.group(0) if extension_match else "",
+        "filesize": filesize_match.group(0) if filesize_match else "",
+        "language": language_match.group(0) if language_match else "",
+    }
+
+
 def extract_search_results(html: str, base_url: str = DEFAULT_BASE_URL, limit: int = 10) -> list[SearchResult]:
     try:
         from bs4 import BeautifulSoup
@@ -201,10 +234,12 @@ def extract_search_results(html: str, base_url: str = DEFAULT_BASE_URL, limit: i
         card = link.find_parent(class_=re.compile(r"(book|item|card|res|result)", re.I))
         if link.name == "z-bookcard":
             details = _extract_bookcard_details(link)
+            metadata = _extract_bookcard_metadata(link)
         else:
             details = _extract_details(card, title) if card else ""
+            metadata = _extract_metadata_from_text(details)
 
-        results.append(SearchResult(title=title, url=url, details=details))
+        results.append(SearchResult(title=title, url=url, details=details, **metadata))
         seen_urls.add(url)
 
         if len(results) >= limit:

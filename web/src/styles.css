@@ -348,21 +348,31 @@ button:not(:disabled):active {
   min-height: 0;
   display: grid;
   align-content: start;
-  gap: 7px;
-  margin-top: 9px;
+  gap: 6px;
+  margin-top: 6px;
   overflow: auto;
   padding-right: 4px;
   scrollbar-gutter: stable;
+}
+
+.results-summary {
+  flex: 0 0 18px;
+  min-height: 18px;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 18px;
 }
 
 .result-card {
   position: relative;
   width: 100%;
   min-width: 0;
-  min-height: 62px;
+  min-height: 78px;
   display: grid;
-  gap: 3px;
-  padding: 9px 10px 9px 38px;
+  gap: 5px;
+  padding: 8px 10px 8px 44px;
   color: var(--text);
   text-align: left;
   background: var(--surface-soft);
@@ -393,6 +403,64 @@ button:not(:disabled):active {
   line-height: 1.28;
 }
 
+.result-meta {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.meta-chip {
+  max-width: 100%;
+  min-height: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.meta-chip span,
+.meta-chip b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meta-chip span {
+  opacity: 0.82;
+}
+
+.meta-chip.format {
+  color: #075985;
+  background: #e0f2fe;
+  border-color: #7dd3fc;
+}
+
+.meta-chip.size {
+  color: #047857;
+  background: #ecfdf5;
+  border-color: #86efac;
+}
+
+.meta-chip.language {
+  color: #9f1239;
+  background: #fff1f2;
+  border-color: #fda4af;
+}
+
+.meta-chip.year {
+  color: #92400e;
+  background: #fffbeb;
+  border-color: #fcd34d;
+}
+
 .result-card small {
   min-width: 0;
   overflow: hidden;
@@ -406,16 +474,16 @@ button:not(:disabled):active {
 
 .result-index {
   position: absolute;
-  top: 9px;
+  top: 8px;
   left: 10px;
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   display: grid;
   place-items: center;
   color: #fff;
   background: var(--accent);
   border-radius: 999px;
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   font-weight: 900;
 }
 

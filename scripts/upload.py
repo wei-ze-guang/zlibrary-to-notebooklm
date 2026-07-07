@@ -7,15 +7,45 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import shutil
 import sys
+import tempfile
 import time
 import re
+import uuid
 from pathlib import Path
 
 try:
     from scripts.browser import choose_chromium_launch_options
 except ImportError:
     from browser import choose_chromium_launch_options
+
+
+DEFAULT_CHUNK_MAX_WORDS = 350000
+DEFAULT_UPLOAD_TIMEOUT_SECONDS = 180
+LARGE_DIRECT_UPLOAD_WARNING_BYTES = 200 * 1024 * 1024
+TEXT_SOURCE_EXTENSIONS = {".md", ".markdown", ".txt"}
+
+
+def safe_slug(value: str | None, fallback: str = "source", max_length: int = 80) -> str:
+    text = (value or "").strip().replace("'", "").replace("’", "")
+    text = re.sub(r"[^\w.-]+", "-", text, flags=re.UNICODE)
+    text = re.sub(r"-{2,}", "-", text).strip("-.").lower()
+    if not text:
+        text = fallback
+    return text[:max_length].strip("-.") or fallback
+
+
+def resolve_notebooklm_command() -> str:
+    command = shutil.which("notebooklm")
+    if command:
+        return command
+
+    sibling_command = Path(sys.executable).with_name("notebooklm")
+    if sibling_command.is_file():
+        return str(sibling_command)
+
+    return "notebooklm"
 
 
 def get_async_playwright():
@@ -31,11 +61,34 @@ def get_async_playwright():
 class ZLibraryAutoUploader:
     """Z-Library 自动下载上传器"""
 
-    def __init__(self):
-        self.downloads_dir = Path.home() / "Downloads"
-        self.temp_dir = Path("/tmp")
+    def __init__(
+        self,
+        task_id: str | None = None,
+        workspace_root: Path | str | None = None,
+        chunk_max_words: int = DEFAULT_CHUNK_MAX_WORDS,
+        upload_timeout_seconds: int = DEFAULT_UPLOAD_TIMEOUT_SECONDS,
+    ):
+        self.task_id = safe_slug(task_id or uuid.uuid4().hex, fallback="task")
+        self.workspace_root = Path(workspace_root) if workspace_root else Path(tempfile.gettempdir()) / "zlibrary-to-notebooklm" / "tasks"
+        self.temp_dir = Path(tempfile.gettempdir())
+        self.chunk_max_words = max(1, int(chunk_max_words))
+        self.upload_timeout_seconds = max(1, int(upload_timeout_seconds))
         self.config_dir = Path.home() / ".zlibrary"
         self.config_file = self.config_dir / "config.json"
+
+    @property
+    def task_dir(self) -> Path:
+        return self.workspace_root / self.task_id
+
+    @property
+    def downloads_dir(self) -> Path:
+        return self.task_dir / "downloads"
+
+    def book_workspace(self, file_path: Path) -> tuple[Path, str]:
+        slug = safe_slug(file_path.stem, fallback="book")
+        workspace = self.task_dir / "books" / slug
+        workspace.mkdir(parents=True, exist_ok=True)
+        return workspace, slug
 
     def load_credentials(self) -> dict | None:
         """加载 Z-Library 凭据"""
@@ -127,6 +180,7 @@ class ZLibraryAutoUploader:
             return None, None
 
         print(f"✅ 使用已保存的会话")
+        self.downloads_dir.mkdir(parents=True, exist_ok=True)
 
         async with get_async_playwright()() as p:
             # 启动浏览器（使用持久化上下文）
@@ -311,7 +365,7 @@ class ZLibraryAutoUploader:
                 if not download_link:
                     print("❌ 未找到下载链接")
                     await browser.close()
-                    return None
+                    return None, None
 
                 # 点击下载
                 print("⬇️  步骤2: 点击下载链接...")
@@ -322,7 +376,7 @@ class ZLibraryAutoUploader:
                 except Exception as e:
                     print(f"❌ 点击失败: {e}")
                     await browser.close()
-                    return None
+                    return None, None
 
                 # 等待下载
                 print("⏳ 步骤3: 等待下载完成...")
@@ -384,9 +438,53 @@ class ZLibraryAutoUploader:
         english_words = len(re.findall(r'\b[a-zA-Z]+\b', text))
         return chinese_chars + english_words
 
+    def _paragraph_units(self, text: str) -> list[str]:
+        parts = re.split(r'(\n{2,})', text)
+        units = []
+        for index in range(0, len(parts), 2):
+            body = parts[index]
+            separator = parts[index + 1] if index + 1 < len(parts) else ""
+            unit = body + separator
+            if unit:
+                units.append(unit)
+        return units
+
+    def _split_by_word_limit(self, text: str, max_words: int) -> list[str]:
+        tokens = list(re.finditer(r'[\u4e00-\u9fff]|\b[a-zA-Z]+\b', text))
+        if not tokens:
+            return [text]
+
+        fragments = []
+        start = 0
+        for token_start in range(0, len(tokens), max_words):
+            token_end = min(token_start + max_words, len(tokens))
+            end = len(text) if token_end == len(tokens) else tokens[token_end - 1].end()
+            fragment = text[start:end]
+            if fragment:
+                fragments.append(fragment)
+            start = end
+        return fragments
+
+    def _iter_chunk_units(self, content: str, max_words: int):
+        chapters = re.split(r'(?=\n#{1,3}\s)', content)
+        for chapter in chapters:
+            if not chapter:
+                continue
+
+            if self.count_words(chapter) <= max_words:
+                yield chapter
+                continue
+
+            for paragraph in self._paragraph_units(chapter):
+                if self.count_words(paragraph) <= max_words:
+                    yield paragraph
+                else:
+                    yield from self._split_by_word_limit(paragraph, max_words)
+
     def split_markdown_file(self, file_path: Path, max_words: int = 350000) -> list[Path]:
         """分割大 Markdown 文件为多个小文件"""
         print(f"📊 文件过大，开始分割...")
+        max_words = max(1, int(max_words))
 
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -395,67 +493,42 @@ class ZLibraryAutoUploader:
         print(f"   总词数: {total_words:,}")
         print(f"   每块最大: {max_words:,} 词")
 
-        # 按章节分割（寻找 ## 或 ### 标题）
-        import re
-        chapters = re.split(r'\n(?=#{1,3}\s)', content)
-
         chunks = []
-        current_chunk = ""
+        current_parts = []
         current_words = 0
-        chunk_num = 1
 
-        for i, chapter in enumerate(chapters):
-            chapter_words = self.count_words(chapter)
+        def flush_current() -> None:
+            nonlocal current_parts, current_words
+            chunk = "".join(current_parts).strip()
+            if chunk:
+                chunks.append(chunk + "\n")
+            current_parts = []
+            current_words = 0
 
-            # 如果单个章节就超过限制，需要进一步分割
-            if chapter_words > max_words:
-                # 先保存当前 chunk
-                if current_chunk:
-                    chunks.append(current_chunk)
-                    chunk_num += 1
-                    current_chunk = ""
-                    current_words = 0
+        for unit in self._iter_chunk_units(content, max_words):
+            unit_words = self.count_words(unit)
+            if unit_words == 0:
+                if current_parts:
+                    current_parts.append(unit)
+                continue
 
-                # 分割大章节（按段落）
-                paragraphs = chapter.split('\n\n')
-                temp_chunk = ""
-                temp_words = 0
+            if current_parts and current_words + unit_words > max_words:
+                flush_current()
 
-                for para in paragraphs:
-                    para_words = self.count_words(para)
-                    if temp_words + para_words > max_words and temp_chunk:
-                        chunks.append(temp_chunk)
-                        chunk_num += 1
-                        temp_chunk = para + "\n\n"
-                        temp_words = para_words
-                    else:
-                        temp_chunk += para + "\n\n"
-                        temp_words += para_words
+            current_parts.append(unit)
+            current_words += unit_words
 
-                if temp_chunk:
-                    current_chunk = temp_chunk
-                    current_words = temp_words
+        flush_current()
 
-            elif current_words + chapter_words > max_words:
-                # 当前 chunk 已满，保存并开始新的
-                chunks.append(current_chunk)
-                chunk_num += 1
-                current_chunk = chapter + "\n\n"
-                current_words = chapter_words
-            else:
-                # 添加到当前 chunk
-                current_chunk += chapter + "\n\n"
-                current_words += chapter_words
-
-        # 保存最后一个 chunk
-        if current_chunk:
-            chunks.append(current_chunk)
+        workspace, slug = self.book_workspace(file_path)
+        parts_dir = workspace / "parts"
+        parts_dir.mkdir(parents=True, exist_ok=True)
 
         # 写入文件
         chunk_files = []
-        stem = file_path.stem
+        total_chunks = len(chunks)
         for i, chunk in enumerate(chunks, 1):
-            chunk_file = file_path.parent / f"{stem}_part{i}.md"
+            chunk_file = parts_dir / f"{slug}_part_{i:03d}_of_{total_chunks:03d}.md"
             with open(chunk_file, 'w', encoding='utf-8') as f:
                 f.write(chunk)
             chunk_files.append(chunk_file)
@@ -477,9 +550,22 @@ class ZLibraryAutoUploader:
         if file_ext == '.pdf' or file_format == 'pdf':
             print("✅ 检测到 PDF 格式，直接使用")
             print(f"   文件: {file_path.name}")
+            file_size = file_path.stat().st_size if file_path.exists() else 0
+            print(f"   大小: {file_size / 1024 / 1024:.1f} MB")
+            if file_size > LARGE_DIRECT_UPLOAD_WARNING_BYTES:
+                print("⚠️  PDF 超过 200 MB，当前不会自动切分；如果 NotebookLM 拒绝上传，请改用 EPUB/Markdown")
             return file_path
 
-        md_file = self.temp_dir / f"{file_path.stem}.md"
+        if file_ext in TEXT_SOURCE_EXTENSIONS:
+            word_count = self.count_words(file_path.read_text(encoding='utf-8'))
+            print(f"📊 词数统计: {word_count:,}")
+            if word_count > self.chunk_max_words:
+                print(f"⚠️  文本超过 {self.chunk_max_words:,} 词，开始分片")
+                return self.split_markdown_file(file_path, self.chunk_max_words)
+            return file_path
+
+        workspace, slug = self.book_workspace(file_path)
+        md_file = workspace / f"{slug}.md"
 
         # 如果是 EPUB，转换为 Markdown
         if file_ext == '.epub':
@@ -506,9 +592,9 @@ class ZLibraryAutoUploader:
             word_count = self.count_words(md_file.read_text(encoding='utf-8'))
             print(f"📊 词数统计: {word_count:,}")
 
-            if word_count > 350000:
-                print(f"⚠️  文件超过 350k 词（NotebookLM CLI 限制）")
-                return self.split_markdown_file(md_file)
+            if word_count > self.chunk_max_words:
+                print(f"⚠️  文件超过 {self.chunk_max_words:,} 词（NotebookLM CLI 限制）")
+                return self.split_markdown_file(md_file, self.chunk_max_words)
             else:
                 return md_file
 
@@ -521,7 +607,7 @@ class ZLibraryAutoUploader:
         import json
 
         result = subprocess.run(
-            ["notebooklm", "create", title, "--json"],
+            [resolve_notebooklm_command(), "create", title, "--json"],
             capture_output=True,
             text=True,
             check=False,
@@ -536,13 +622,21 @@ class ZLibraryAutoUploader:
         except:
             return None
 
-    def _upload_source_to_notebook(self, file_path: Path, notebook_id: str | None = None) -> tuple[bool, str]:
+    def _upload_source_to_notebook(
+        self,
+        file_path: Path,
+        notebook_id: str | None = None,
+        title: str | None = None,
+    ) -> tuple[bool, str]:
         import subprocess
         import json
 
-        command = ["notebooklm", "source", "add", str(file_path)]
+        command = [resolve_notebooklm_command(), "source", "add", str(file_path)]
         if notebook_id:
             command.extend(["--notebook", notebook_id])
+        if title:
+            command.extend(["--title", title])
+        command.extend(["--timeout", str(self.upload_timeout_seconds)])
         command.append("--json")
         result = subprocess.run(command, capture_output=True, text=True, check=False)
 
@@ -554,6 +648,12 @@ class ZLibraryAutoUploader:
             return True, data['source']['id']
         except:
             return False, "解析来源 ID 失败"
+
+    def _title_from_path(self, file_path: Path) -> str:
+        stem = re.sub(r"_part_\d{3}_of_\d{3}$", "", file_path.stem)
+        stem = re.sub(r"_part\d+$", "", stem)
+        title = re.sub(r"[_-]+", " ", stem).strip()
+        return title or file_path.stem
 
     def upload_to_notebooklm(self, file_path: Path | list[Path], title: str = None, notebook_id: str = None) -> dict:
         """上传到 NotebookLM"""
@@ -569,7 +669,7 @@ class ZLibraryAutoUploader:
             # 使用第一个文件确定书名
             first_file = file_path[0]
             if not title:
-                title = first_file.stem.replace('_part1', '').replace('_', ' ')
+                title = self._title_from_path(first_file)
                 # 清理文件名
                 title = re.sub(r'\[.*?\]', '', title)
                 title = re.sub(r'\(.*?\)', '', title)
@@ -588,14 +688,28 @@ class ZLibraryAutoUploader:
 
             # 上传所有分块
             source_ids = []
+            failed_chunks = []
             for i, chunk_file in enumerate(file_path, 1):
                 print(f"📄 上传分块 {i}/{len(file_path)}: {chunk_file.name}")
-                ok, value = self._upload_source_to_notebook(chunk_file, notebook_id)
+                source_title = f"{title} - Part {i:03d}/{len(file_path):03d}"
+                ok, value = self._upload_source_to_notebook(chunk_file, notebook_id, title=source_title)
                 if not ok:
                     print(f"⚠️  分块 {i} 上传失败: {value}")
+                    failed_chunks.append({"file": str(chunk_file), "error": value})
                     continue
                 source_ids.append(value)
                 print(f"   ✅ 成功 (ID: {value[:8]}...)")
+
+            if failed_chunks:
+                return {
+                    "success": False,
+                    "notebook_id": notebook_id,
+                    "source_ids": source_ids,
+                    "failed_chunks": failed_chunks,
+                    "title": title,
+                    "chunks": len(file_path),
+                    "error": f"分块上传失败: {len(failed_chunks)}/{len(file_path)} 个分块失败",
+                }
 
             return {
                 "success": len(source_ids) > 0,
@@ -608,7 +722,7 @@ class ZLibraryAutoUploader:
         # 单文件上传
         # 确定书名
         if not title:
-            title = file_path.stem.replace('_', ' ')
+            title = self._title_from_path(file_path)
             # 清理文件名
             title = re.sub(r'\[.*?\]', '', title)
             title = re.sub(r'\(.*?\)', '', title)
@@ -628,7 +742,7 @@ class ZLibraryAutoUploader:
 
         # 上传文件
         print(f"📄 上传文件...")
-        ok, value = self._upload_source_to_notebook(file_path, notebook_id)
+        ok, value = self._upload_source_to_notebook(file_path, notebook_id, title=title)
         if not ok:
             return {"success": False, "error": value}
 

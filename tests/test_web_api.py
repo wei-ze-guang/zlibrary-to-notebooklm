@@ -17,6 +17,7 @@ from scripts.web_api import (
     get_zlibrary_auth_status,
     parse_created_notebook,
     parse_notebooks,
+    parse_search_limit,
     read_json_body,
     resolve_notebooklm_command,
     resolve_static_file,
@@ -69,6 +70,18 @@ class WebApiTest(unittest.TestCase):
 
         self.assertEqual(notebook["id"], "abc123")
         self.assertEqual(notebook["title"], "New Notebook")
+
+    def test_parse_search_limit_defaults_and_clamps(self):
+        self.assertEqual(parse_search_limit({}), 50)
+        self.assertEqual(parse_search_limit({"limit": ["12"]}), 12)
+        self.assertEqual(parse_search_limit({"limit": ["999"]}), 80)
+
+    def test_parse_search_limit_rejects_invalid_values(self):
+        with self.assertRaises(BadRequest):
+            parse_search_limit({"limit": ["abc"]})
+
+        with self.assertRaises(BadRequest):
+            parse_search_limit({"limit": ["0"]})
 
     def test_create_task_defaults_to_queued_status(self):
         task = create_task("https://zh.zlib.li/book/example", notebook_title="OS Notes")

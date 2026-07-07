@@ -19,6 +19,12 @@ type SearchResult = {
   title: string;
   url: string;
   details: string;
+  author?: string;
+  publisher?: string;
+  year?: string;
+  extension?: string;
+  filesize?: string;
+  language?: string;
 };
 
 type Notebook = {
@@ -60,6 +66,35 @@ type AuthStatus = {
 };
 
 const BACKEND_UNAVAILABLE = "后端服务未启动：请运行 python3 scripts/web_api.py，或打开 http://127.0.0.1:7860";
+const SEARCH_RESULT_LIMIT = 50;
+
+type ResultChip = {
+  label: string;
+  value: string;
+  tone: "format" | "size" | "language" | "year";
+};
+
+function buildResultChips(book: SearchResult): ResultChip[] {
+  const chips: ResultChip[] = [];
+  if (book.extension?.trim()) {
+    chips.push({ label: "格式", value: book.extension.trim().toUpperCase(), tone: "format" });
+  }
+  if (book.filesize?.trim()) {
+    chips.push({ label: "大小", value: book.filesize.trim(), tone: "size" });
+  }
+  if (book.language?.trim()) {
+    chips.push({ label: "语言", value: book.language.trim(), tone: "language" });
+  }
+  if (book.year?.trim()) {
+    chips.push({ label: "年份", value: book.year.trim(), tone: "year" });
+  }
+  return chips;
+}
+
+function resultSubtitle(book: SearchResult): string {
+  const parts = [book.author, book.publisher].map((part) => part?.trim()).filter(Boolean);
+  return parts.length ? parts.join(" · ") : book.details || "暂无详情";
+}
 
 function backendUnavailableAuth(message = BACKEND_UNAVAILABLE): AuthStatus {
   return {
@@ -197,7 +232,7 @@ function App() {
     setMessage("");
     setSelectedBook(null);
     try {
-      const data = await api<{ results: SearchResult[] }>(`/api/search?q=${encodeURIComponent(query)}&limit=12`);
+      const data = await api<{ results: SearchResult[] }>(`/api/search?q=${encodeURIComponent(query)}&limit=${SEARCH_RESULT_LIMIT}`);
       setResults(data.results);
       if (data.results[0]) {
         setSelectedBook(data.results[0]);
@@ -374,19 +409,35 @@ function App() {
               搜索
             </button>
           </form>
+          <div className="results-summary">
+            {busy === "search" ? "正在搜索..." : results.length ? `显示 ${results.length} 条结果` : " "}
+          </div>
           <div className="results-list">
             {results.length ? (
-              results.map((book, index) => (
-                <button
-                  className={`result-card ${selectedBook?.url === book.url ? "selected" : ""}`}
-                  key={book.url}
-                  onClick={() => setSelectedBook(book)}
-                >
-                  <span className="result-index">{index + 1}</span>
-                  <strong>{book.title}</strong>
-                  <small>{book.details || "暂无详情"}</small>
-                </button>
-              ))
+              results.map((book, index) => {
+                const chips = buildResultChips(book);
+                return (
+                  <button
+                    className={`result-card ${selectedBook?.url === book.url ? "selected" : ""}`}
+                    key={book.url}
+                    onClick={() => setSelectedBook(book)}
+                  >
+                    <span className="result-index">{index + 1}</span>
+                    <strong>{book.title}</strong>
+                    {chips.length > 0 && (
+                      <span className="result-meta" aria-label="书籍文件信息">
+                        {chips.map((chip) => (
+                          <span className={`meta-chip ${chip.tone}`} key={`${chip.label}-${chip.value}`}>
+                            <span>{chip.label}</span>
+                            <b>{chip.value}</b>
+                          </span>
+                        ))}
+                      </span>
+                    )}
+                    <small>{resultSubtitle(book)}</small>
+                  </button>
+                );
+              })
             ) : (
               <div className="empty-state">输入关键词搜索，结果会显示在这里。</div>
             )}

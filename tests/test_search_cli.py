@@ -43,7 +43,8 @@ class SearchCliTest(unittest.TestCase):
                 publisher="机械工业出版社"
                 extension="PDF"
                 year="2018"
-                filesize="166.63 MB">
+                filesize="166.63 MB"
+                language="中文">
             </z-bookcard>
         </div>
         """
@@ -58,6 +59,27 @@ class SearchCliTest(unittest.TestCase):
         )
         self.assertIn("Abraham Silberschatz", results[0].details)
         self.assertIn("PDF", results[0].details)
+        self.assertEqual(results[0].author, "Abraham Silberschatz")
+        self.assertEqual(results[0].publisher, "机械工业出版社")
+        self.assertEqual(results[0].extension, "PDF")
+        self.assertEqual(results[0].year, "2018")
+        self.assertEqual(results[0].filesize, "166.63 MB")
+        self.assertEqual(results[0].language, "中文")
+
+    def test_extract_search_results_parses_metadata_from_plain_card_details(self):
+        html = """
+        <div class="book-item">
+            <a href="/book/789/plain-book"><h3>Plain Book</h3></a>
+            <div class="property_value">机械工业出版社, 2023, epub, 10.44 MB, 中文</div>
+        </div>
+        """
+
+        results = extract_search_results(html, "https://zh.zlib.li", limit=10)
+
+        self.assertEqual(results[0].extension, "epub")
+        self.assertEqual(results[0].year, "2023")
+        self.assertEqual(results[0].filesize, "10.44 MB")
+        self.assertEqual(results[0].language, "中文")
 
     def test_extract_search_results_from_book_cards(self):
         html = """

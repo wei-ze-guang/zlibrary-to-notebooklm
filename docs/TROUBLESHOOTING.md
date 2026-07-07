@@ -246,7 +246,7 @@ command not found: notebooklm
 2. 检查下载文件：
 
    ```bash
-   ls -lh ~/Downloads/*.{pdf,epub} 2>/dev/null
+   find /tmp/zlibrary-to-notebooklm/tasks -type f -path '*/downloads/*' 2>/dev/null | tail -20
    ```
 
 3. 手动上传测试：
@@ -255,15 +255,17 @@ command not found: notebooklm
    notebooklm source add "文件路径" --notebook "<notebook-id>"
    ```
 
-4. 对 EPUB，优先使用脚本转换成 Markdown。超过约 350k 词时，脚本会自动分块上传。
+4. 对 EPUB，优先使用脚本转换成 Markdown。EPUB 转出的 Markdown，以及已有 `.md`、`.markdown`、`.txt` 超过约 350k 词时，脚本会自动分块上传。
 
 ### 问题：大文件上传不稳定
 
 NotebookLM 官方限制和 CLI 实际稳定范围不完全相同。项目采取保守策略：
 
 - EPUB 转 Markdown 后超过约 350k 词会自动分块
-- 每个分块逐个上传到同一个笔记本
-- PDF 当前直接上传，如果 PDF 过大，需要手动压缩或拆分
+- `.md`、`.markdown`、`.txt` 超过约 350k 词也会自动分块
+- 每个分块逐个上传到同一个笔记本，标题会带 `Part 001/008` 这类序号
+- 任意分块失败时，任务整体会失败并返回失败分块路径
+- PDF 当前直接上传；超过 200MB 会输出警告，如果上传失败需要手动压缩或拆分
 
 ---
 
@@ -367,7 +369,7 @@ pip install -r requirements.txt
 1. 确认 EPUB 文件存在：
 
    ```bash
-   ls -lh ~/Downloads/*.epub
+   find /tmp/zlibrary-to-notebooklm/tasks -type f -name '*.epub' 2>/dev/null | tail -20
    ```
 
 2. 手动转换测试：
@@ -415,23 +417,20 @@ python3 scripts/login.py
 
 ### 问题：下载目录不正确
 
-默认下载目录：
-
-- macOS/Linux: `~/Downloads/`
-- Windows: `%USERPROFILE%/Downloads/`
+当前脚本会把每个上传任务隔离到独立工作目录，默认根目录为 `/tmp/zlibrary-to-notebooklm/tasks/`。
 
 查找最近下载文件：
 
 ```bash
-ls -lt ~/Downloads/*.{pdf,epub} 2>/dev/null | head -5
+find /tmp/zlibrary-to-notebooklm/tasks -type f -path '*/downloads/*' 2>/dev/null | tail -20
 ```
 
 ### 问题：Markdown 或分块文件找不到
 
-EPUB 转换后的 Markdown 默认在 `/tmp/`：
+EPUB 转换后的 Markdown 和分块文件默认在任务工作目录：
 
 ```bash
-ls -lt /tmp/*.md 2>/dev/null | head -10
+find /tmp/zlibrary-to-notebooklm/tasks -path '*/books/*' -type f 2>/dev/null | tail -20
 ```
 
 ---

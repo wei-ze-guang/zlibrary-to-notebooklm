@@ -33,6 +33,8 @@ from scripts.browser import choose_chromium_launch_options, choose_system_browse
 WEB_DIST_DIR = ROOT_DIR / "web" / "dist"
 WEB_PUBLIC_DIR = ROOT_DIR / "web"
 ZLIBRARY_LOGIN_TIMEOUT_SECONDS = 15 * 60
+DEFAULT_SEARCH_LIMIT = 50
+MAX_SEARCH_LIMIT = 80
 TASKS: dict[str, "UploadTask"] = {}
 TASKS_LOCK = threading.Lock()
 ZLIBRARY_LOGIN_LOCK = threading.RLock()
@@ -515,6 +517,18 @@ def create_notebook(title: str) -> dict[str, str]:
     return parse_created_notebook(result.stdout)
 
 
+def parse_search_limit(params: dict[str, list[str]]) -> int:
+    raw_limit = params.get("limit", [str(DEFAULT_SEARCH_LIMIT)])[0]
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError) as exc:
+        raise BadRequest("搜索数量必须是正整数") from exc
+
+    if limit < 1:
+        raise BadRequest("搜索数量必须大于 0")
+    return min(limit, MAX_SEARCH_LIMIT)
+
+
 class Tee(io.StringIO):
     def __init__(self, task: UploadTask):
         super().__init__()
@@ -530,7 +544,7 @@ class Tee(io.StringIO):
 def run_upload_task(task: UploadTask) -> None:
     task.status = "running"
     task.logs.append("开始下载书籍")
-    uploader = ZLibraryAutoUploader()
+    uploader = ZLibraryAutoUploader(task_id=task.id)
 
     try:
         if not task.notebook_id:
@@ -615,7 +629,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/search":
                 params = parse_qs(parsed.query)
                 query = params.get("q", [""])[0].strip()
-                limit = int(params.get("limit", ["10"])[0])
+                limit = parse_search_limit(params)
                 if not query:
                     json_response(self, 400, {"error": "搜索关键词不能为空"})
                     return

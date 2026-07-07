@@ -29,10 +29,10 @@
 - 🔐 **One-time Login, Forever Use** - Similar to `notebooklm login` experience
 - 🔎 **Search First** - Search Z-Library from the CLI and copy the exact book link
 - 📥 **Smart Download** - Prioritizes PDF (preserves formatting), auto-fallback to EPUB → Markdown
-- 📦 **Smart Chunking** - Large files auto-split (>350k words) for reliable CLI upload
+- 📦 **Smart Chunking** - Large EPUB/Markdown/TXT sources auto-split (>350k words) for reliable CLI upload
 - 🤖 **Fully Automated** - Complete workflow with a single command
 - 🖥️ **Visual Workbench** - Local React/Vite page for search, notebook selection, and upload
-- 🎯 **Format Adaptive** - Automatically detects and processes multiple formats (PDF, EPUB, MOBI, etc.)
+- 🎯 **Format Adaptive** - Handles PDF, EPUB, Markdown, and TXT; other formats are passed through to NotebookLM CLI
 - 📊 **Visual Progress** - Real-time display of download and conversion progress
 
 ## 🎯 Use as Claude Skill (Recommended)
@@ -196,14 +196,14 @@ Z-Library URL
 3. Smart format selection:
    - Priority: PDF (preserves formatting)
    - Fallback: EPUB (convert to Markdown)
-   - Other formats (auto-convert)
+   - Other formats (try direct upload)
     ↓
-4. Download to ~/Downloads
+4. Download to a task-scoped workspace
     ↓
 5. Format processing:
    - PDF → Use directly
    - EPUB → Convert to Markdown
-   - Check file size → Auto-chunk if >350k words
+   - Markdown/TXT → Use directly or auto-chunk if >350k words
     ↓
 6. Create NotebookLM notebook
     ↓
@@ -351,10 +351,12 @@ This project is optimized for NotebookLM's actual limitations:
 
 ### Our Solution
 ✅ **Automatic File Chunking**:
-- When EPUB is converted to Markdown, the script automatically detects word count
-- Files exceeding 350,000 words are automatically split into multiple smaller files
-- Each chunk is uploaded individually to the same NotebookLM notebook
-- Smart chapter-based splitting preserves content integrity
+- Each upload task gets an isolated workspace under `/tmp/zlibrary-to-notebooklm/tasks/<task-id>/`
+- Downloads are stored in `downloads/`; converted Markdown and parts are stored in `books/<book-slug>/`
+- EPUB is converted to Markdown first; `.md`, `.markdown`, and `.txt` files are counted directly
+- Files exceeding 350,000 words are split into stable part files like `book-slug_part_001_of_008.md`
+- Each part is uploaded to the same NotebookLM notebook with titles like `Book Slug - Part 001/008`
+- PDF files are uploaded directly. PDFs over 200MB print a warning, but are not automatically split
 
 **Example**:
 ```bash
@@ -368,6 +370,8 @@ This project is optimized for NotebookLM's actual limitations:
    ...
 📦 Detected 8 file chunks
 ```
+
+If any part fails to upload, the whole upload task is marked failed and the failed part paths are returned in the task result.
 
 ### Why 350k Words?
 - Official limit is 500k words, but CLI tools tend to timeout near this limit
