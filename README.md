@@ -27,9 +27,11 @@
 ## ✨ Features
 
 - 🔐 **One-time Login, Forever Use** - Similar to `notebooklm login` experience
+- 🔎 **Search First** - Search Z-Library from the CLI and copy the exact book link
 - 📥 **Smart Download** - Prioritizes PDF (preserves formatting), auto-fallback to EPUB → Markdown
 - 📦 **Smart Chunking** - Large files auto-split (>350k words) for reliable CLI upload
 - 🤖 **Fully Automated** - Complete workflow with a single command
+- 🖥️ **Visual Workbench** - Local React/Vite page for search, notebook selection, and upload
 - 🎯 **Format Adaptive** - Automatically detects and processes multiple formats (PDF, EPUB, MOBI, etc.)
 - 📊 **Visual Progress** - Real-time display of download and conversion progress
 
@@ -42,10 +44,11 @@
 cd ~/.claude/skills  # Windows: %APPDATA%\Claude\skills
 
 # 2. Clone the repository
-git clone https://github.com/zstmfhy/zlibrary-to-notebooklm.git zlib-to-notebooklm
+git clone https://github.com/wei-ze-guang/zlibrary-to-notebooklm.git
 
 # 3. Complete initial login
-cd zlib-to-notebooklm
+cd zlibrary-to-notebooklm
+notebooklm login
 python3 scripts/login.py
 ```
 
@@ -54,7 +57,7 @@ python3 scripts/login.py
 After installation, simply tell Claude Code:
 
 ```text
-Use zlib-to-notebooklm skill to process this Z-Library link:
+Use zlibrary-to-notebooklm skill to process this Z-Library link:
 https://zh.zlib.li/book/25314781/aa05a1/book-title
 ```
 
@@ -74,17 +77,31 @@ Claude will automatically:
 
 ```bash
 # Clone repository
-git clone https://github.com/zstmfhy/zlibrary-to-notebooklm.git
+git clone https://github.com/wei-ze-guang/zlibrary-to-notebooklm.git
 cd zlibrary-to-notebooklm
 
 # Install Python dependencies
-pip install playwright ebooklib
+pip install -r requirements.txt
 
 # Install Playwright browser
 playwright install chromium
 ```
 
-### 2. Login to Z-Library (One-time Only)
+The visual workbench is optional. It requires Node.js `^20.19.0` or `>=22.12.0` and `pnpm`, because the frontend uses Vite 7.
+
+### 2. Login to NotebookLM CLI (One-time Only)
+
+```bash
+# Confirm the notebooklm command is available
+notebooklm --version
+
+# Start the authorization flow and sign in with your Google account
+notebooklm login
+```
+
+If `notebooklm login` is not available in your installed version, run `notebooklm --help` and use the login/auth command shown there.
+
+### 3. Login to Z-Library (One-time Only)
 
 ```bash
 python3 scripts/login.py
@@ -96,7 +113,15 @@ python3 scripts/login.py
 3. Return to terminal and press **ENTER**
 4. Session saved!
 
-### 3. Download and Upload Books
+### 4. Search Books (Optional)
+
+```bash
+python3 scripts/search.py "machine learning"
+```
+
+The script prints numbered results with title, brief details, and the Z-Library link. Copy the link you want, then run the upload command.
+
+### 5. Download and Upload Books
 
 ```bash
 python3 scripts/upload.py "https://zh.zlib.li/book/..."
@@ -117,9 +142,27 @@ python3 scripts/upload.py "https://zh.zlib.li/book/..."
 ### Basic Usage
 
 ```bash
+# Search books
+python3 scripts/search.py "machine learning"
+
 # Download single book
 python3 scripts/upload.py "https://zh.zlib.li/book/12345/..."
 ```
+
+### Visual Workbench
+
+```bash
+# Install and build the frontend once
+cd web
+pnpm install
+pnpm build
+cd ..
+
+# Start the local page
+python3 scripts/web_api.py
+```
+
+Open `http://127.0.0.1:7860` to search books, select an existing NotebookLM notebook, create a new notebook, and upload with one click.
 
 ### Batch Processing
 
@@ -182,8 +225,16 @@ zlibrary-to-notebooklm/
 ├── requirements.txt      # Python dependencies
 ├── scripts/              # Executable scripts (official standard)
 │   ├── login.py         # Login script
+│   ├── search.py        # Search result display script
 │   ├── upload.py        # Download + Upload script
+│   ├── web_api.py       # Local web workbench API
 │   └── convert_epub.py  # EPUB conversion tool
+├── web/                  # React/Vite web workbench
+│   ├── package.json      # Frontend scripts and dependencies
+│   ├── src/main.tsx      # Workbench UI entry
+│   ├── src/styles.css    # Workbench styles
+│   └── tsconfig*.json    # TypeScript configuration
+├── tests/                # Python unittest coverage for scripts and scaffolding
 ├── docs/                 # Documentation
 │   ├── WORKFLOW.md      # Workflow details
 │   └── TROUBLESHOOTING.md # Troubleshooting guide
@@ -206,11 +257,19 @@ All configurations are saved in `~/.zlibrary/` directory:
 - **Python 3.8+**
 - **playwright** - Browser automation
 - **ebooklib** - EPUB file processing
+- **beautifulsoup4 + lxml** - HTML parsing for search results and EPUB content
 - **NotebookLM CLI** - Google NotebookLM command-line tool
+- **Node.js + pnpm** - Optional, only needed to build the visual workbench
 
 ## 📝 Command Reference
 
-### Login
+### Login to NotebookLM
+
+```bash
+notebooklm login
+```
+
+### Login to Z-Library
 
 ```bash
 python3 scripts/login.py
@@ -220,6 +279,36 @@ python3 scripts/login.py
 
 ```bash
 python3 scripts/upload.py <Z-Library URL>
+```
+
+### Search
+
+```bash
+python3 scripts/search.py <search keywords>
+python3 scripts/search.py <search keywords> --limit 20
+```
+
+### Web Workbench
+
+```bash
+python3 scripts/web_api.py
+```
+
+API endpoints served by the local workbench:
+
+- `GET /api/search?q=<keywords>&limit=12`
+- `GET /api/notebooks`
+- `POST /api/notebooks` with `{"title":"Notebook title"}`
+- `POST /api/upload` with `{"zlibrary_url":"...","notebook_id":"..."}` or `{"zlibrary_url":"...","notebook_title":"..."}`
+- `GET /api/tasks/<task_id>`
+
+### npm Script Shortcuts
+
+```bash
+npm run login
+npm run search -- "machine learning"
+npm run upload -- "https://zh.zlib.li/book/..."
+npm run web
 ```
 
 ### Check Session Status
@@ -233,6 +322,19 @@ ls -lh ~/.zlibrary/storage_state.json
 ```bash
 rm ~/.zlibrary/storage_state.json
 python3 scripts/login.py
+```
+
+## ✅ Development Checks
+
+```bash
+python3 -m unittest discover -v
+```
+
+For frontend changes:
+
+```bash
+cd web
+pnpm build
 ```
 
 ## 📊 NotebookLM Limits
@@ -270,7 +372,13 @@ This project is optimized for NotebookLM's actual limitations:
 ### Why 350k Words?
 - Official limit is 500k words, but CLI tools tend to timeout near this limit
 - 350k words is a tested safe value for reliable uploads
-- Web interface can handle larger files directly, but CLI tools require chunking
+- The local web workbench uses the same CLI backend, so it follows the same chunking behavior
+
+## 📚 More Documentation
+
+- [Installation guide](INSTALL.md)
+- [Workflow details](docs/WORKFLOW.md)
+- [Troubleshooting guide](docs/TROUBLESHOOTING.md)
 
 ## 🤝 Contributing
 
@@ -294,8 +402,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📮 Contact
 
-- GitHub Issues: [Submit issues](https://github.com/zstmfhy/zlibrary-to-notebooklm/issues)
-- Discussions: [GitHub Discussions](https://github.com/zstmfhy/zlibrary-to-notebooklm/discussions)
+- GitHub Issues: [Submit issues](https://github.com/wei-ze-guang/zlibrary-to-notebooklm/issues)
+- Discussions: [GitHub Discussions](https://github.com/wei-ze-guang/zlibrary-to-notebooklm/discussions)
 
 ---
 

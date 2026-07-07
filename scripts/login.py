@@ -5,16 +5,21 @@ Z-Library Login - 一次性登录，保存会话状态
 类似 notebooklm login 的工作方式
 """
 
-import asyncio
+from __future__ import annotations
+
+import argparse
 import sys
 from pathlib import Path
 
-try:
-    from playwright.sync_api import sync_playwright
-except ImportError:
-    print("❌ Playwright 未安装")
-    print("请运行: pip install playwright")
-    sys.exit(1)
+
+def get_sync_playwright():
+    try:
+        from playwright.sync_api import sync_playwright
+        return sync_playwright
+    except ImportError:
+        print("❌ Playwright 未安装")
+        print("请运行: pip install playwright")
+        sys.exit(1)
 
 
 def zlibrary_login():
@@ -37,7 +42,7 @@ def zlibrary_login():
     print("  4. 会话状态将被保存，后续无需再次登录")
     print("")
 
-    with sync_playwright() as p:
+    with get_sync_playwright()() as p:
         print("🚀 启动浏览器...")
         browser = p.chromium.launch_persistent_context(
             user_data_dir=str(config_dir / "browser_profile"),
@@ -72,7 +77,7 @@ def zlibrary_login():
             print(f"📁 位置: {storage_state}")
             print("")
             print("💡 现在可以运行自动化脚本了：")
-            print("   python3 /tmp/auto_download_and_upload.py <Z-Library URL>")
+            print("   python3 scripts/upload.py <Z-Library URL>")
             print("")
 
         except Exception as e:
@@ -81,8 +86,18 @@ def zlibrary_login():
             browser.close()
 
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments before starting browser automation."""
+    parser = argparse.ArgumentParser(
+        prog="login.py",
+        description="Z-Library 登录并保存浏览器会话",
+    )
+    return parser.parse_args(argv)
+
+
 def main():
     """主函数"""
+    parse_args()
     zlibrary_login()
 
 

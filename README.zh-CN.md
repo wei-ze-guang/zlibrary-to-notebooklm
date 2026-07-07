@@ -27,9 +27,11 @@
 ## ✨ 特性
 
 - 🔐 **一次登录，永久使用** - 类似 `notebooklm login` 的体验
+- 🔎 **先搜索再处理** - 通过 CLI 搜索 Z-Library，复制准确书籍链接
 - 📥 **智能下载** - 优先 PDF（保留排版），自动降级 EPUB → Markdown
 - 📦 **智能分块** - 大文件自动分割（>350k 词），确保 CLI 上传成功
 - 🤖 **全自动化** - 一条命令完成整个流程
+- 🖥️ **可视化工作台** - 本地 React/Vite 页面支持搜索、选择知识库和上传
 - 🎯 **格式自适应** - 自动检测并处理多种格式（PDF、EPUB、MOBI 等）
 - 📊 **进度可视化** - 实时显示下载和转换进度
 
@@ -42,10 +44,11 @@
 cd ~/.claude/skills  # Windows: %APPDATA%\Claude\skills
 
 # 2. 克隆仓库
-git clone https://github.com/zstmfhy/zlibrary-to-notebooklm.git zlib-to-notebooklm
+git clone https://github.com/wei-ze-guang/zlibrary-to-notebooklm.git
 
 # 3. 完成首次登录
-cd zlib-to-notebooklm
+cd zlibrary-to-notebooklm
+notebooklm login
 python3 scripts/login.py
 ```
 
@@ -54,7 +57,7 @@ python3 scripts/login.py
 安装后，在 Claude Code 中直接说：
 
 ```text
-用 zlib-to-notebooklm skill 处理这个 Z-Library 链接：
+用 zlibrary-to-notebooklm skill 处理这个 Z-Library 链接：
 https://zh.zlib.li/book/25314781/aa05a1/书的标题
 ```
 
@@ -74,17 +77,31 @@ Claude 会自动：
 
 ```bash
 # 克隆仓库
-git clone https://github.com/zstmfhy/zlibrary-to-notebooklm.git
+git clone https://github.com/wei-ze-guang/zlibrary-to-notebooklm.git
 cd zlibrary-to-notebooklm
 
 # 安装 Python 依赖
-pip install playwright ebooklib
+pip install -r requirements.txt
 
 # 安装 Playwright 浏览器
 playwright install chromium
 ```
 
-### 2. 登录 Z-Library（仅需一次）
+可视化工作台是可选功能。前端使用 Vite 7，因此需要 Node.js `^20.19.0` 或 `>=22.12.0`，以及 `pnpm`。
+
+### 2. 登录 NotebookLM CLI（仅需一次）
+
+```bash
+# 确认 notebooklm 命令可用
+notebooklm --version
+
+# 打开授权流程，按提示登录 Google 账号
+notebooklm login
+```
+
+如果 `notebooklm login` 不可用，请先运行 `notebooklm --help` 查看当前版本提供的登录/授权命令。
+
+### 3. 登录 Z-Library（仅需一次）
 
 ```bash
 python3 scripts/login.py
@@ -97,7 +114,15 @@ python3 scripts/login.py
 3. 登录成功后，回到终端按 **ENTER**
 4. 会话状态已保存！
 
-### 3. 下载并上传书籍
+### 4. 搜索书籍（可选）
+
+```bash
+python3 scripts/search.py "机器学习"
+```
+
+脚本会展示搜索结果编号、书名、简要信息和 Z-Library 链接。复制想要处理的链接后，再运行上传命令。
+
+### 5. 下载并上传书籍
 
 ```bash
 python3 scripts/upload.py "https://zh.zlib.li/book/..."
@@ -118,9 +143,27 @@ python3 scripts/upload.py "https://zh.zlib.li/book/..."
 ### 基本用法
 
 ```bash
+# 搜索书籍
+python3 scripts/search.py "机器学习"
+
 # 下载单本书籍
 python3 scripts/upload.py "https://zh.zlib.li/book/12345/..."
 ```
+
+### 可视化工作台
+
+```bash
+# 首次进入前端目录安装依赖并构建
+cd web
+pnpm install
+pnpm build
+cd ..
+
+# 启动本地页面
+python3 scripts/web_api.py
+```
+
+打开 `http://127.0.0.1:7860`，即可在页面中搜索书籍、选择已有 NotebookLM 知识库、创建新知识库，并一键上传。
 
 ### 批量处理
 
@@ -183,8 +226,16 @@ zlibrary-to-notebooklm/
 ├── requirements.txt      # Python 依赖
 ├── scripts/              # 可执行脚本（官方标准）
 │   ├── login.py         # 登录脚本
+│   ├── search.py        # 搜索结果展示脚本
 │   ├── upload.py        # 下载+上传脚本
+│   ├── web_api.py       # 本地 Web 工作台 API
 │   └── convert_epub.py  # EPUB 转换工具
+├── web/                  # React/Vite 可视化工作台
+│   ├── package.json      # 前端脚本和依赖
+│   ├── src/main.tsx      # 工作台 UI 入口
+│   ├── src/styles.css    # 工作台样式
+│   └── tsconfig*.json    # TypeScript 配置
+├── tests/                # Python unittest 测试
 ├── docs/                 # 文档
 │   ├── WORKFLOW.md      # 工作流程详解
 │   └── TROUBLESHOOTING.md # 故障排除
@@ -207,11 +258,19 @@ zlibrary-to-notebooklm/
 - **Python 3.8+**
 - **playwright** - 浏览器自动化
 - **ebooklib** - EPUB 文件处理
+- **beautifulsoup4 + lxml** - 搜索结果和 EPUB 内容的 HTML 解析
 - **NotebookLM CLI** - Google NotebookLM 命令行工具
+- **Node.js + pnpm** - 可选，仅构建可视化工作台时需要
 
 ## 📝 命令参考
 
-### 登录
+### 登录 NotebookLM
+
+```bash
+notebooklm login
+```
+
+### 登录 Z-Library
 
 ```bash
 python3 scripts/login.py
@@ -221,6 +280,36 @@ python3 scripts/login.py
 
 ```bash
 python3 scripts/upload.py <Z-Library URL>
+```
+
+### 搜索
+
+```bash
+python3 scripts/search.py <搜索关键词>
+python3 scripts/search.py <搜索关键词> --limit 20
+```
+
+### Web 工作台
+
+```bash
+python3 scripts/web_api.py
+```
+
+本地工作台提供的 API：
+
+- `GET /api/search?q=<关键词>&limit=12`
+- `GET /api/notebooks`
+- `POST /api/notebooks`，请求体为 `{"title":"知识库名称"}`
+- `POST /api/upload`，请求体为 `{"zlibrary_url":"...","notebook_id":"..."}` 或 `{"zlibrary_url":"...","notebook_title":"..."}`
+- `GET /api/tasks/<task_id>`
+
+### npm 脚本快捷方式
+
+```bash
+npm run login
+npm run search -- "机器学习"
+npm run upload -- "https://zh.zlib.li/book/..."
+npm run web
 ```
 
 ### 查看会话状态
@@ -234,6 +323,19 @@ ls -lh ~/.zlibrary/storage_state.json
 ```bash
 rm ~/.zlibrary/storage_state.json
 python3 scripts/login.py
+```
+
+## ✅ 开发验证
+
+```bash
+python3 -m unittest discover -v
+```
+
+如果修改了前端：
+
+```bash
+cd web
+pnpm build
 ```
 
 ## 📊 NotebookLM 限制说明
@@ -271,7 +373,13 @@ python3 scripts/login.py
 ### 为什么选择 350k 词作为阈值？
 - 官方限制是 500k 词，但 CLI 工具在接近此限制时容易超时
 - 350k 词是经过测试的安全值，可确保稳定上传
-- 网页界面可以直接上传更大的文件，但 CLI 工具需要分块
+- 本地 Web 工作台同样使用 CLI 后端，因此遵循同一套分块策略
+
+## 📚 更多文档
+
+- [安装指南](INSTALL.md)
+- [工作流程详解](docs/WORKFLOW.md)
+- [故障排除指南](docs/TROUBLESHOOTING.md)
 
 ## 🤝 贡献
 
@@ -295,8 +403,8 @@ python3 scripts/login.py
 
 ## 📮 联系方式
 
-- GitHub Issues: [提交问题](https://github.com/zstmfhy/zlibrary-to-notebooklm/issues)
-- 讨论区: [GitHub Discussions](https://github.com/zstmfhy/zlibrary-to-notebooklm/discussions)
+- GitHub Issues: [提交问题](https://github.com/wei-ze-guang/zlibrary-to-notebooklm/issues)
+- 讨论区: [GitHub Discussions](https://github.com/wei-ze-guang/zlibrary-to-notebooklm/discussions)
 
 ---
 

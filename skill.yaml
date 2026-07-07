@@ -28,4 +28,6 @@ dependencies:
   - python>=3.8
   - playwright
   - ebooklib
+  - beautifulsoup4
+  - lxml
   - notebooklm-cli

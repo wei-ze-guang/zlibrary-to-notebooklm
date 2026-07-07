@@ -1,257 +1,297 @@
 # 工作流程详解
 
+本文说明当前项目的三条使用链路：
+
+- CLI 主流程：`login.py` → `search.py`（可选）→ `upload.py`
+- Web 工作台：`web_api.py` + `web/` 前端
+- NotebookLM CLI：由脚本调用 `notebooklm create/list/source add`
+
 ## 完整流程图
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │                    Z-Library to NotebookLM                   │
-│                        完整工作流程                          │
+│                        当前工作流程                          │
 └─────────────────────────────────────────────────────────────┘
                             ↓
         ┌───────────────────────────────────────┐
-        │  1. 用户输入 Z-Library 书籍链接       │
+        │  1. 用户输入书名关键词或 Z-Library URL │
         └───────────────────────────────────────┘
-                            ↓
+                     ↙              ↘
+             只有关键词              已有 URL
+                 ↓                      ↓
+    ┌──────────────────┐      ┌─────────────────┐
+    │ scripts/search.py │      │ scripts/upload.py│
+    │ 展示候选链接      │      │ 进入上传流程     │
+    └──────────────────┘      └─────────────────┘
+                 ↓                      ↓
         ┌───────────────────────────────────────┐
-        │  2. 检查本地会话状态                   │
+        │  2. 检查 Z-Library 会话                │
         │     ~/.zlibrary/storage_state.json     │
         └───────────────────────────────────────┘
                      ↙              ↘
               会话存在              会话不存在
                  ↓                      ↓
     ┌──────────────────┐      ┌─────────────────┐
-    │  使用已保存的会话  │      │  提示用户先登录   │
-    └──────────────────┘      │  python3 login.py│
-                              └─────────────────┘
-                            ↓
+    │ 使用已保存的会话  │      │ python3 scripts/ │
+    │ 启动 Playwright   │      │ login.py         │
+    └──────────────────┘      └─────────────────┘
+                 ↓
         ┌───────────────────────────────────────┐
-        │  3. 启动浏览器（Playwright）           │
-        │     - 使用持久化上下文                 │
-        │     - 加载保存的 cookies               │
+        │  3. 访问书籍页面并选择格式             │
+        │     优先级: PDF > EPUB > 其他          │
         └───────────────────────────────────────┘
-                            ↓
+                 ↓
         ┌───────────────────────────────────────┐
-        │  4. 访问书籍页面                       │
+        │  4. 下载到 ~/Downloads/                │
         └───────────────────────────────────────┘
-                            ↓
+                 ↓
         ┌───────────────────────────────────────┐
-        │  5. 检测页面类型                       │
+        │  5. 格式处理                           │
+        │     PDF 直接上传                       │
+        │     EPUB 转 Markdown                   │
+        │     >350k 词自动分块                   │
         └───────────────────────────────────────┘
-                     ↙              ↘
-             新版界面              旧版界面
-         (三点菜单)            (转换按钮)
-                 ↓                   ↓
-    ┌─────────────────┐   ┌──────────────────┐
-    │ 点击三点菜单     │   │ 查找转换按钮      │
-    │ 选择格式         │   │ 点击转换          │
-    └─────────────────┘   └──────────────────┘
-                 ↘                   ↙
-                  └─────────┬──────────┘
-                            ↓
+                 ↓
         ┌───────────────────────────────────────┐
-        │  6. 智能选择格式                       │
-        │     优先级: PDF > EPUB > 其他         │
+        │  6. 调用 NotebookLM CLI                │
+        │     create / source add --notebook     │
         └───────────────────────────────────────┘
-                            ↓
+                 ↓
         ┌───────────────────────────────────────┐
-        │  7. 等待转换完成（如需要）             │
-        │     - 检测"转换已完成"消息             │
-        │     - 最长等待 60 秒                  │
+        │  7. 返回 notebook_id 和 source_id       │
         └───────────────────────────────────────┘
-                            ↓
-        ┌───────────────────────────────────────┐
-        │  8. 点击下载链接                      │
-        │     - 使用 JavaScript 点击             │
-        │     - 绕过可见性问题                   │
-        └───────────────────────────────────────┘
-                            ↓
-        ┌───────────────────────────────────────┐
-        │  9. 等待下载完成                       │
-        │     - 监听下载事件                    │
-        │     - 保存到 ~/Downloads/             │
-        └───────────────────────────────────────┘
-                            ↓
-        ┌───────────────────────────────────────┐
-        │  10. 格式处理                          │
-        │      ↙          ↘                    │
-        │   是 PDF       是 EPUB                │
-        │     ↓            ↓                    │
-        │  直接使用    转换为 TXT               │
-        └───────────────────────────────────────┘
-                            ↓
-        ┌───────────────────────────────────────┐
-        │  11. 创建 NotebookLM 笔记本           │
-        │      - notebooklm create              │
-        └───────────────────────────────────────┘
-                            ↓
-        ┌───────────────────────────────────────┐
-        │  12. 上传内容                          │
-        │      - notebooklm source add          │
-        └───────────────────────────────────────┘
-                            ↓
-        ┌───────────────────────────────────────┐
-        │  13. 返回笔记本 ID                     │
-        │      - 用户可以立即开始使用           │
-        └───────────────────────────────────────┘
-                            ↓
-                      ✅ 完成！
+                 ↓
+                      ✅ 完成
 ```
 
-## 详细步骤说明
+## CLI 流程
 
-### 步骤 1-2: 初始化和会话检查
+### 1. 登录 NotebookLM CLI
 
-**检测会话状态：**
-- 位置：`~/.zlibrary/storage_state.json`
-- 内容：cookies、localStorage、sessionStorage
-- 权限：600（仅所有者可读写）
-
-**如果没有会话：**
 ```bash
-python3 bin/login.py
+notebooklm login
 ```
 
-### 步骤 3-4: 浏览器启动和页面访问
+如果当前 `notebooklm` 版本没有 `login` 子命令，运行 `notebooklm --help` 查看实际的登录或授权命令。
 
-**使用 Playwright 持久化上下文：**
-```python
-browser = await p.chromium.launch_persistent_context(
-    user_data_dir="~/.zlibrary/browser_profile",
-    headless=False,
-    accept_downloads=True
-)
+### 2. 登录 Z-Library
+
+```bash
+python3 scripts/login.py
 ```
 
-**优势：**
-- 保留所有 cookies
-- 保留浏览器缓存
-- 无需重复登录
+脚本会打开浏览器，用户在浏览器中完成登录后回到终端按 ENTER。会话保存到：
 
-### 步骤 5-6: 页面类型检测和格式选择
-
-**新版界面（三点菜单）：**
-```python
-dots_button = await page.query_selector('[class*="dots"]')
-if dots_button:
-    # 点击菜单，选择格式
+```text
+~/.zlibrary/storage_state.json
+~/.zlibrary/browser_profile/
 ```
 
-**旧版界面（转换按钮）：**
-```python
-convert_button = await page.query_selector('a[data-convert_to="pdf"]')
-if convert_button:
-    # 点击转换按钮
+### 3. 搜索书籍（可选）
+
+```bash
+python3 scripts/search.py "机器学习" --limit 20
 ```
 
-**格式优先级：**
-1. **PDF** ⭐ - 保留排版，无需转换
-2. **EPUB** - 转换为纯文本（AI 检索最佳）
-3. **其他** - 根据情况处理
+搜索脚本会：
 
-### 步骤 7-8: 转换和下载
+- 使用已保存的 Z-Library 会话
+- 打开搜索页
+- 解析书名、简要信息和链接
+- 输出可复制的 Z-Library 书籍 URL
 
-**等待转换完成：**
-```python
-for i in range(60):
-    message = await page.query_selector('.message:has-text("转换为")')
-    if '完成' in await message.inner_text():
-        break
-    await asyncio.sleep(1)
+### 4. 下载并上传
+
+```bash
+python3 scripts/upload.py "https://zh.zlib.li/book/..."
 ```
 
-**JavaScript 点击（绕过可见性问题）：**
-```python
-await download_link.evaluate('el => el.click()')
+`upload.py` 是主入口。它负责下载、转换、分块、创建 NotebookLM 笔记本和上传来源。
+
+## 下载与格式处理
+
+### 页面识别
+
+脚本会兼容两类页面：
+
+- 新版界面：尝试打开更多菜单，优先选择 PDF，其次 EPUB
+- 旧版界面：查找 `data-convert_to="pdf"` 或 `data-convert_to="epub"` 转换按钮
+
+### 下载目录
+
+原始下载文件保存到：
+
+```text
+~/Downloads/
 ```
 
-### 步骤 9-10: 下载和格式处理
+EPUB 转换后的 Markdown 和分块文件默认写入：
 
-**监听下载事件：**
-```python
-async def handle_download(download):
-    file_path = downloads_dir / download.suggested_filename
-    await download.save_as(file_path)
-
-page.on('download', handle_download)
+```text
+/tmp/
 ```
 
-**格式处理：**
-- **PDF** → 直接使用
-- **EPUB** → 使用 ebooklib 提取文本
+### 格式优先级
 
-### 步骤 11-12: NotebookLM 上传
+1. **PDF** - 保留排版，直接上传
+2. **EPUB** - 转为 Markdown 后上传
+3. **其他格式** - 尝试直接上传，失败时需要用户手动处理
 
-**创建笔记本：**
+### 分块策略
+
+NotebookLM 官方限制通常高于脚本阈值，但 CLI 在大文件场景下容易超时。项目采用更保守的阈值：
+
+```text
+350,000 词 / Markdown 文件
+```
+
+当 EPUB 转出的 Markdown 超过阈值时，脚本会按章节和段落拆成 `*_partN.md`，并逐个上传到同一个 NotebookLM 笔记本。
+
+## NotebookLM 上传
+
+脚本通过 `subprocess.run` 调用 NotebookLM CLI，关键命令形态如下：
+
 ```bash
 notebooklm create "书名" --json
+notebooklm source add "文件路径" --notebook "<notebook-id>" --json
 ```
 
-**上传内容：**
+如果是 Web 工作台创建的新笔记本，`web_api.py` 会先调用 `notebooklm create`，再把返回的 `notebook_id` 传给上传流程。
+
+## Web 工作台流程
+
+### 启动
+
+首次使用前构建前端：
+
 ```bash
-notebooklm source add "文件路径" --json
+cd web
+pnpm install
+pnpm build
+cd ..
 ```
 
-## 故障排除
+启动本地 API 和静态页面：
 
-### 问题 1: 会话过期
+```bash
+python3 scripts/web_api.py
+```
 
-**症状：** 提示未登录
+打开：
 
-**解决：**
+```text
+http://127.0.0.1:7860
+```
+
+### 页面能力
+
+Web 工作台支持：
+
+- 搜索 Z-Library
+- 查看 NotebookLM 笔记本列表
+- 创建 NotebookLM 笔记本
+- 选择已有笔记本并上传
+- 查看上传任务状态和日志
+
+### API 端点
+
+```text
+GET  /api/search?q=<关键词>&limit=12
+GET  /api/notebooks
+POST /api/notebooks
+POST /api/upload
+GET  /api/tasks/<task_id>
+```
+
+请求体示例：
+
+```json
+{"title":"我的新知识库"}
+```
+
+```json
+{"zlibrary_url":"https://zh.zlib.li/book/...","notebook_id":"<notebook-id>"}
+```
+
+也可以用 `notebook_title` 让后端先创建新笔记本：
+
+```json
+{"zlibrary_url":"https://zh.zlib.li/book/...","notebook_title":"新知识库"}
+```
+
+## npm 脚本快捷方式
+
+根目录 `package.json` 提供了同名快捷命令：
+
+```bash
+npm run login
+npm run search -- "机器学习"
+npm run upload -- "https://zh.zlib.li/book/..."
+npm run web
+```
+
+这些命令只是调用 `scripts/` 下的 Python 文件，不会替代 Python 依赖安装。
+
+## 故障排除速查
+
+### 会话过期
+
 ```bash
 rm ~/.zlibrary/storage_state.json
-python3 bin/login.py
+python3 scripts/login.py
 ```
 
-### 问题 2: 找不到下载按钮
+### NotebookLM CLI 未登录
 
-**症状：** "未找到下载链接"
+```bash
+notebooklm login
+```
 
-**可能原因：**
-- 页面结构变化
-- 需要登录
-- 网络问题
+### 找不到 `notebooklm`
 
-**解决：**
-- 检查浏览器窗口
-- 手动完成操作
-- 截图保存用于调试
+```bash
+notebooklm --version
+```
 
-### 问题 3: 转换超时
+如果命令不存在，请先按你使用的 NotebookLM CLI 来源完成安装。
 
-**症状：** "转换超时"
+### 找不到下载按钮
 
-**解决：**
-- 检查网络连接
-- 尝试手动点击转换
-- 增加等待时间
+- 检查浏览器窗口是否已登录
+- 手动打开书籍页面确认是否可下载
+- 尝试使用搜索结果里的另一个条目
+- 页面结构变化时，需要更新 Playwright 选择器
 
 ## 最佳实践
 
-1. **定期检查会话状态**
+1. **先搜索，后上传**
+
    ```bash
-   ls -lh ~/.zlibrary/storage_state.json
+   python3 scripts/search.py "书名 作者" --limit 20
    ```
 
-2. **批量处理时添加延迟**
+2. **批量处理时串行执行**
+
    ```bash
    for url in "url1" "url2" "url3"; do
-       python3 bin/upload.py "$url"
-       sleep 5  # 避免请求过快
+       python3 scripts/upload.py "$url"
+       sleep 5
    done
    ```
 
 3. **保留原始文件**
-   - 所有下载文件保存在 `~/Downloads/`
-   - 转换后的文本在 `/tmp/`
-   - 可以随时备份或重新处理
 
-## 性能优化
+   - 原始 PDF/EPUB 在 `~/Downloads/`
+   - Markdown 和分块文件在 `/tmp/`
+   - 上传失败时可以复用这些文件手动排查
 
-- 使用持久化浏览器上下文（减少启动时间）
-- 并发下载（批量处理时）
-- 智能格式选择（优先 PDF，减少转换时间）
+4. **修改代码后运行测试**
+
+   ```bash
+   python3 -m unittest discover -v
+   ```
 
 ---
 
-**需要帮助？** 查看 [故障排除指南](TROUBLESHOOTING.md)
+**需要帮助？** 查看 [故障排除指南](TROUBLESHOOTING.md)。

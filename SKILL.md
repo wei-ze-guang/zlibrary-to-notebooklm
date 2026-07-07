@@ -1,258 +1,299 @@
 ---
 name: zlibrary-to-notebooklm
-description: 自动从 Z-Library 下载书籍并上传到 Google NotebookLM。支持 PDF/EPUB 格式，自动转换，一键创建知识库。
+description: 自动从 Z-Library 搜索、下载书籍并上传到 Google NotebookLM。支持 PDF/EPUB、自动转换、分块上传，并提供可选本地 Web 工作台。
 ---
 
 # Z-Library to NotebookLM Skill
 
-让 Claude 帮你自动下载书籍并上传到 NotebookLM，实现"零幻觉"的 AI 对话式阅读。
+让 Claude 帮用户把合法可访问的 Z-Library 资料下载到本地，并上传到 NotebookLM，用于基于原文的阅读、摘要和问答。
 
 ## 🎯 核心功能
 
-- 一键下载书籍（优先 PDF，自动降级 EPUB）
-- 自动创建 NotebookLM 笔记本
-- 上传文件并返回笔记本 ID
-- 支持与 AI 进行基于书籍内容的对话
+- 根据 Z-Library 链接一键下载并上传
+- 可先用关键词搜索书籍链接
+- 优先下载 PDF，保留原始排版
+- EPUB 自动转换为 Markdown
+- 超大 Markdown 自动按约 350k 词分块
+- 自动创建 NotebookLM 笔记本并上传来源
+- 可选启动本地 Web 工作台完成搜索、选库和上传
 
 ## 📋 激活条件（Triggers）
 
 当用户提到以下需求时，使用此 Skill：
 
 - 用户提供 Z-Library 书籍链接（包含 `zlib.li`、`z-lib.org`、`zh.zlib.li` 等域名）
-- 用户说"帮我把这本书上传到 NotebookLM"
-- 用户说"自动下载并读这本书"
-- 用户说"用 Z-Library 链接创建 NotebookLM 知识库"
-- 用户要求从特定 URL 下载书籍并分析
+- 用户说“帮我把这本书上传到 NotebookLM”
+- 用户说“自动下载并读这本书”
+- 用户说“用 Z-Library 链接创建 NotebookLM 知识库”
+- 用户只提供书名或关键词，并希望先搜索可用条目
+- 用户想打开本地页面批量选择、创建知识库或上传
 
 ## 🔧 核心指令
 
-当用户提供 Z-Library 链接时，按以下流程执行：
-
-### Step 1: 提取信息
-
-从用户提供的 URL 中提取：
-- 书名
-- 作者（如果有）
-- 完整 URL
-- 格式选项（PDF/EPUB/MOBI 等）
-
-### Step 2: 自动下载
-
-使用已保存的会话（`~/.zlibrary/storage_state.json`）自动登录 Z-Library：
-
-1. **优先下载 PDF**（保留排版，AI 分析效果更好）
-2. **自动降级**：如果没有 PDF，下载 EPUB
-3. **格式转换**：如果下载 EPUB，使用 ebooklib 转换为纯文本
-
-### Step 3: 创建 NotebookLM 笔记本
+在执行前，先确认当前目录是本 skill 仓库根目录。如果不是，先进入安装目录，例如：
 
 ```bash
-notebooklm create "书名"
+cd ~/.claude/skills/zlibrary-to-notebooklm
 ```
 
-### Step 4: 上传文件
+### Step 1: 判断用户输入
+
+从用户请求中提取：
+
+- Z-Library URL（如果已提供）
+- 书名、作者或关键词（如果没有 URL）
+- 用户是否指定 NotebookLM 笔记本或希望新建笔记本
+
+如果用户只提供关键词，先搜索：
 
 ```bash
-notebooklm source add "文件路径"
+python3 scripts/search.py "关键词" --limit 20
 ```
+
+把结果编号、书名和链接返回给用户，请用户确认要处理哪一本。
+
+### Step 2: 检查登录状态
+
+Z-Library 会话保存在：
+
+```text
+~/.zlibrary/storage_state.json
+```
+
+如果会话不存在或失效，提示用户运行：
+
+```bash
+python3 scripts/login.py
+```
+
+NotebookLM CLI 也需要提前登录：
+
+```bash
+notebooklm login
+```
+
+如果 `notebooklm login` 不可用，请让用户运行 `notebooklm --help`，按当前 CLI 版本显示的登录或授权命令操作。
+
+### Step 3: 下载并上传
+
+标准入口始终使用上传脚本：
+
+```bash
+python3 scripts/upload.py "https://zh.zlib.li/book/..."
+```
+
+脚本会自动完成：
+
+1. 使用已保存的 Z-Library 会话打开书籍页面
+2. 优先下载 PDF，无法获取时降级 EPUB
+3. EPUB 转换为 Markdown
+4. 超大 Markdown 自动分块
+5. 调用 `notebooklm create` 创建笔记本
+6. 调用 `notebooklm source add --notebook <id>` 上传来源
+7. 返回 NotebookLM 笔记本 ID 和来源 ID
+
+### Step 4: 可选 Web 工作台
+
+如果用户希望在页面中搜索、选择已有 NotebookLM 笔记本或创建新笔记本：
+
+```bash
+python3 scripts/web_api.py
+```
+
+打开：
+
+```text
+http://127.0.0.1:7860
+```
+
+首次使用 Web 工作台前，需要构建前端：
+
+```bash
+cd web
+pnpm install
+pnpm build
+cd ..
+```
+
+前端需要 Node.js `^20.19.0` 或 `>=22.12.0`，以及 `pnpm`。
 
 ### Step 5: 返回结果
 
 向用户返回：
-- ✅ 下载成功确认
-- 📚 笔记本 ID
-- 💡 建议的后续问题示例
+
+- 下载和上传是否成功
+- NotebookLM 笔记本 ID
+- 来源 ID 或分块来源 ID
+- 下一步可执行的 NotebookLM 命令
+- 2-3 个适合这本书的后续提问建议
 
 ### Step 6: 错误处理
 
 如果遇到错误：
-- 尝试重试最多 3 次
-- 如果登录失败，提示用户运行 `python3 ~/.claude/skills/zlibrary-to-notebooklm/scripts/login.py`
-- 如果下载失败，提供故障排查建议
+
+- 登录失败：提示运行 `python3 scripts/login.py` 或 `notebooklm login`
+- 找不到 `notebooklm`：提示先确认 `notebooklm --version` 可用
+- 搜索无结果：建议换关键词或提供完整 Z-Library 链接
+- 下载失败：提示检查登录状态、网络和书籍页面是否可访问
+- 上传失败：检查 NotebookLM CLI 登录、文件大小和格式
+- 依赖缺失：提示运行 `pip install -r requirements.txt`
+
+不要凭空声称上传成功；必须以脚本输出的 notebook/source ID 为准。
 
 ## ⚠️ 重要限制
 
-**仅限合法资源！**
+**仅限合法资源。**
 
 - ✅ 用户拥有合法访问权限的资源
 - ✅ 公共领域或开源许可的文档
-- ✅ 个人拥有版权或已获授权的内容
+- ✅ 用户个人拥有版权或已获授权的内容
 - ❌ 不要鼓励或协助版权侵权行为
 
-**如果 URL 明显涉及受版权保护的商业作品，提醒用户：**
-> "请确保你有合法访问权限。本项目仅用于学习研究目的，请支持正版阅读。"
+如果 URL 明显涉及受版权保护的商业作品，提醒用户：
+
+> 请确保你有合法访问权限。本项目仅用于学习、研究和技术演示目的，请支持正版阅读。
 
 ## 🛠️ 依赖工具
 
 ### 必需工具
 
-1. **Playwright** - 浏览器自动化
-   - 用于自动登录和下载
-   - 需要预先运行 `playwright install chromium`
+1. **Python 3.8+**
+2. **Playwright** - 浏览器自动化，需要运行 `playwright install chromium`
+3. **ebooklib** - EPUB 处理
+4. **beautifulsoup4 + lxml** - 搜索结果和 EPUB HTML 解析
+5. **NotebookLM CLI** - `notebooklm create`、`notebooklm list`、`notebooklm source add`
 
-2. **ebooklib** - EPUB 处理
-   - 用于将 EPUB 转换为纯文本
+### 可选工具
 
-3. **NotebookLM CLI** - 上传工具
-   - `notebooklm create` - 创建笔记本
-   - `notebooklm source add` - 上传文件
+1. **Node.js + pnpm** - 构建 React/Vite Web 工作台
 
 ### 配置文件
 
-- `~/.zlibrary/storage_state.json` - 保存的登录会话
-- `~/.zlibrary/browser_profile/` - 浏览器数据
+- `~/.zlibrary/storage_state.json` - Z-Library 登录会话
+- `~/.zlibrary/browser_profile/` - Playwright 浏览器数据
+- `~/Downloads/` - 原始下载文件
+- `/tmp/` - EPUB 转换后的 Markdown 和分块文件
 
 ## 📝 使用示例
 
-### 用户请求
+### 用户提供链接
 
-```
+用户：
+
+```text
 帮我把这本书上传到 NotebookLM：
 https://zh.zlib.li/book/25314781/aa05a1/钱的第四维
 ```
 
-### 执行流程
+执行：
 
-1. **确认并提取信息**
-   ```
-   书名：钱的第四维
-   URL：https://zh.zlib.li/book/25314781/aa05a1/钱的第四维
-   ```
+```bash
+python3 scripts/upload.py "https://zh.zlib.li/book/25314781/aa05a1/钱的第四维"
+```
 
-2. **执行下载脚本**
-   ```bash
-   cd ~/.claude/skills/zlibrary-to-notebooklm
-   python3 scripts/upload.py "https://zh.zlib.li/book/25314781/aa05a1/钱的第四维"
-   ```
+返回：
 
-3. **返回结果**
-   ```
-   ✅ 下载成功！
-   📚 笔记本 ID: 22916611-c68c-4065-a657-99339e126fb4
+```text
+✅ 下载并上传成功
+📚 笔记本 ID: <notebook-id>
+📄 来源 ID: <source-id>
 
-   现在你可以问我：
-   - "这本书的核心观点是什么？"
-   - "总结第3章的内容"
-   - "作者有哪些独特的见解？"
-   ```
+你可以继续问：
+- 这本书的核心观点是什么？
+- 作者如何论证主要结论？
+- 哪些章节适合做成读书笔记？
+```
+
+### 用户只提供书名
+
+用户：
+
+```text
+帮我找《认知觉醒》并上传到 NotebookLM
+```
+
+执行：
+
+```bash
+python3 scripts/search.py "认知觉醒" --limit 20
+```
+
+把搜索结果展示给用户，确认链接后再运行 `scripts/upload.py`。
+
+### 用户想使用页面
+
+执行：
+
+```bash
+python3 scripts/web_api.py
+```
+
+让用户打开 `http://127.0.0.1:7860`。
 
 ## 🔄 备选流程
 
-### 如果用户只提供书名
+### 如果用户提供本地文件
 
-```
-用户："帮我下载《认知觉醒》这本书"
-```
-
-**操作：**
-1. 询问："请问有 Z-Library 的链接吗？"
-2. 如果有链接，执行标准流程
-3. 如果没有链接，提示："请提供 Z-Library 书籍页面链接，我可以帮你自动下载并上传到 NotebookLM"
-
-### 如果用户提供其他来源
-
-```
-用户："这个 PDF 能上传到 NotebookLM 吗？[本地文件路径]"
-```
-
-**操作：**
-1. 告知用户："本 Skill 主要用于 Z-Library 链接"
-2. 建议："对于本地文件，你可以直接使用 notebooklm source add 命令上传"
-
-## 📊 技术细节
-
-### 下载优先级
-
-1. **PDF** - 保留排版，AI 分析效果最佳
-2. **EPUB** - 转换为纯文本（使用 ebooklib）
-3. **其他格式** - 尝试转换或提示用户
-
-### 会话管理
-
-- **一次登录，永久使用**
-- 会话保存在 `~/.zlibrary/storage_state.json`
-- 如果会话失效，提示用户重新登录
-
-### 错误重试
-
-- 下载失败：自动重试 3 次
-- 登录失败：提示用户手动登录
-- 上传失败：检查文件大小和格式
-
-## 💡 最佳实践
-
-### 首次使用
-
-第一次使用前，确保用户已完成登录：
+本 Skill 主要处理 Z-Library 链接。对于本地文件，建议用户直接使用 NotebookLM CLI：
 
 ```bash
-cd ~/.claude/skills/zlibrary-to-notebooklm
-python3 scripts/login.py
+notebooklm source add "文件路径" --notebook "<notebook-id>"
 ```
 
-### 批量处理
+如果用户还没有笔记本：
 
-如果用户有多个链接：
-
-```
-用户："帮我下载这3本书：[链接1] [链接2] [链接3]"
+```bash
+notebooklm create "笔记本名称" --json
 ```
 
-**操作：**
-1. 逐个处理（每次一个链接）
-2. 每个完成后，再处理下一个
-3. 避免并发导致会话冲突
+### 如果用户有多个链接
 
-### 内容分析
+逐个处理，避免并发浏览器会话或下载任务互相影响：
 
-上传完成后，主动建议：
-
-```
-✅ 书籍已上传！你可以：
-
-• 立即开始阅读："这本书的核心观点是什么？"
-• 深入探讨："解释第5章的案例"
-• 生成笔记："创建详细的读书笔记"
-• 对比分析："这与书中的观点有什么不同？"
+```bash
+for url in "url1" "url2" "url3"; do
+    python3 scripts/upload.py "$url"
+    sleep 5
+done
 ```
 
 ## 🚨 故障排查
 
-### 常见问题
+**Q: 提示“未找到登录会话”**
 
-**Q: 提示"未找到登录会话"**
-A: 需要先运行 `python3 scripts/login.py` 登录一次
+A: 运行 `python3 scripts/login.py`，完成 Z-Library 登录。
 
-**Q: 下载失败，超时**
-A: 可能是网络问题，建议重试或检查网络连接
+**Q: 提示“未找到 notebooklm 命令”**
 
-**Q: 找不到下载按钮**
-A: Z-Library 页面结构可能变化，使用备用方案手动下载
+A: 先确认 `notebooklm --version` 可用，并运行 `notebooklm login`。
+
+**Q: 搜索结果为空**
+
+A: 换关键词、减少限定词，或让用户提供完整 Z-Library 链接。
+
+**Q: 下载失败或找不到下载按钮**
+
+A: 检查浏览器窗口、登录状态和书籍页面结构；页面变化时可能需要手动确认。
 
 **Q: NotebookLM 上传失败**
-A: 检查文件大小（NotebookLM 有上传限制）
 
-### 详细帮助
+A: 检查 NotebookLM CLI 登录状态、文件大小、格式和网络。
 
-查看 `docs/TROUBLESHOOTING.md` 获取完整故障排查指南。
+详细帮助见 `docs/TROUBLESHOOTING.md`。
 
 ## 📚 相关资源
 
-- [NotebookLM 官方文档](https://notebooklm.google.com/)
-- [Z-Library 网站](https://zh.zlib.li/)
+- [README](README.md)
+- [安装指南](INSTALL.md)
+- [工作流程详解](docs/WORKFLOW.md)
+- [故障排除指南](docs/TROUBLESHOOTING.md)
+- [NotebookLM](https://notebooklm.google.com/)
+- [Z-Library](https://zh.zlib.li/)
 - [Playwright 文档](https://playwright.dev/)
-- [项目 GitHub](https://github.com/zstmfhy/zlibrary-to-notebooklm)
-
-## 🎓 学习资源
-
-如果你想了解更多：
-
-- **如何高效使用 NotebookLM**：询问"NotebookLM 有哪些使用技巧？"
-- **如何创建个人知识库**：询问"如何用 NotebookLM 构建知识管理系统？"
-- **AI 对话式阅读**：询问"怎样让 AI 帮我深度阅读一本书？"
+- [项目 GitHub](https://github.com/wei-ze-guang/zlibrary-to-notebooklm)
 
 ---
 
 **Skill Version:** 1.0.0
-**Last Updated:** 2025-01-14
-**Author:** zstmfhy
+
+**Last Updated:** 2026-07-07

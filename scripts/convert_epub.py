@@ -5,9 +5,18 @@ Uses BeautifulSoup for robust HTML parsing.
 """
 import sys
 import re
-from ebooklib import epub
 from pathlib import Path
-from bs4 import BeautifulSoup
+
+
+def load_epub_dependencies():
+    try:
+        from bs4 import BeautifulSoup
+        from ebooklib import epub
+        return BeautifulSoup, epub
+    except ImportError as exc:
+        print(f"❌ 依赖未安装: {exc.name}")
+        print("请运行: pip install -r requirements.txt")
+        return None, None
 
 
 def html_to_markdown(soup):
@@ -123,6 +132,10 @@ def epub_to_markdown(epub_path, output_path):
     print(f"📖 Reading EPUB: {epub_path}")
 
     try:
+        BeautifulSoup, epub = load_epub_dependencies()
+        if not BeautifulSoup or not epub:
+            return False
+
         book = epub.read_epub(epub_path)
 
         # Get metadata

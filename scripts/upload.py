@@ -3,19 +3,24 @@
 Z-Library 全自动下载并上传到 NotebookLM
 """
 
+from __future__ import annotations
+
+import argparse
 import asyncio
 import sys
 import time
 import re
 from pathlib import Path
-from urllib.parse import unquote
 
-try:
-    from playwright.async_api import async_playwright
-except ImportError:
-    print("❌ Playwright 未安装")
-    print("请运行: pip install playwright")
-    sys.exit(1)
+
+def get_async_playwright():
+    try:
+        from playwright.async_api import async_playwright
+        return async_playwright
+    except ImportError:
+        print("❌ Playwright 未安装")
+        print("请运行: pip install playwright")
+        sys.exit(1)
 
 
 class ZLibraryAutoUploader:
@@ -45,7 +50,7 @@ class ZLibraryAutoUploader:
 
         if not credentials:
             print("⚠️  未找到 Z-Library 配置")
-            print("💡 请先运行: python3 /tmp/zlib_config.py")
+            print("💡 请先运行: python3 scripts/login.py")
             return False
 
         print("🔐 登录 Z-Library...")
@@ -102,7 +107,7 @@ class ZLibraryAutoUploader:
             print(f"❌ 登录过程出错: {e}")
             return False
 
-    async def download_from_zlibrary(self, url: str) -> Path | None:
+    async def download_from_zlibrary(self, url: str) -> tuple[Path | None, str | None]:
         """从 Z-Library 下载书籍"""
         print("="*70)
         print("🌐 启动浏览器自动化下载")
@@ -113,12 +118,12 @@ class ZLibraryAutoUploader:
 
         if not storage_state.exists():
             print("❌ 未找到会话状态")
-            print("💡 请先运行: python3 /tmp/zlibrary_login.py")
-            return None
+            print("💡 请先运行: python3 scripts/login.py")
+            return None, None
 
         print(f"✅ 使用已保存的会话")
 
-        async with async_playwright() as p:
+        async with get_async_playwright()() as p:
             # 启动浏览器（使用持久化上下文）
             print("🚀 启动浏览器...")
 
@@ -474,9 +479,13 @@ class ZLibraryAutoUploader:
             script_dir = Path(__file__).parent
             convert_script = script_dir / "convert_epub.py"
 
-            cmd = f"python3 '{convert_script}' '{file_path}' '{md_file}'"
             import subprocess
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            result = subprocess.run(
+                [sys.executable, str(convert_script), str(file_path), str(md_file)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
 
             if result.returncode != 0:
                 print(f"❌ 转换失败: {result.stderr}")
@@ -485,7 +494,7 @@ class ZLibraryAutoUploader:
             print(f"✅ 转换成功: {md_file}")
 
             # 检查文件大小，如果过大则分割
-            word_count = self.count_words(open(md_file, 'r', encoding='utf-8').read())
+            word_count = self.count_words(md_file.read_text(encoding='utf-8'))
             print(f"📊 词数统计: {word_count:,}")
 
             if word_count > 350000:
@@ -498,7 +507,46 @@ class ZLibraryAutoUploader:
             print(f"ℹ️  文件格式: {file_ext}，直接使用")
             return file_path
 
-    def upload_to_notebooklm(self, file_path: Path | list[Path], title: str = None) -> dict:
+    def _create_notebook(self, title: str) -> str | None:
+        import subprocess
+        import json
+
+        result = subprocess.run(
+            ["notebooklm", "create", title, "--json"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if result.returncode != 0:
+            return None
+
+        try:
+            data = json.loads(result.stdout)
+            return data['notebook']['id']
+        except:
+            return None
+
+    def _upload_source_to_notebook(self, file_path: Path, notebook_id: str | None = None) -> tuple[bool, str]:
+        import subprocess
+        import json
+
+        command = ["notebooklm", "source", "add", str(file_path)]
+        if notebook_id:
+            command.extend(["--notebook", notebook_id])
+        command.append("--json")
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+
+        if result.returncode != 0:
+            return False, result.stderr
+
+        try:
+            data = json.loads(result.stdout)
+            return True, data['source']['id']
+        except:
+            return False, "解析来源 ID 失败"
+
+    def upload_to_notebooklm(self, file_path: Path | list[Path], title: str = None, notebook_id: str = None) -> dict:
         """上传到 NotebookLM"""
         print("")
         print("="*70)
@@ -520,47 +568,25 @@ class ZLibraryAutoUploader:
                 if len(title) > 50:
                     title = title[:50] + "..."
 
-            # 创建笔记本
-            print(f"📚 创建笔记本: {title}")
-            import subprocess
-            import json
-
-            cmd = f"notebooklm create '{title}' --json"
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-
-            if result.returncode != 0:
-                return {"success": False, "error": result.stderr}
-
-            try:
-                data = json.loads(result.stdout)
-                notebook_id = data['notebook']['id']
+            if notebook_id:
+                print(f"📚 使用已有笔记本 (ID: {notebook_id[:8]}...)")
+            else:
+                print(f"📚 创建笔记本: {title}")
+                notebook_id = self._create_notebook(title)
+                if not notebook_id:
+                    return {"success": False, "error": "创建或解析笔记本 ID 失败"}
                 print(f"✅ 笔记本已创建 (ID: {notebook_id[:8]}...)")
-            except:
-                return {"success": False, "error": "解析笔记本 ID 失败"}
-
-            # 设置上下文
-            print(f"🎯 设置笔记本上下文...")
-            cmd = f"notebooklm use {notebook_id}"
-            subprocess.run(cmd, shell=True, capture_output=True)
 
             # 上传所有分块
             source_ids = []
             for i, chunk_file in enumerate(file_path, 1):
                 print(f"📄 上传分块 {i}/{len(file_path)}: {chunk_file.name}")
-                cmd = f"notebooklm source add '{chunk_file}' --json"
-                result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-
-                if result.returncode != 0:
-                    print(f"⚠️  分块 {i} 上传失败: {result.stderr}")
+                ok, value = self._upload_source_to_notebook(chunk_file, notebook_id)
+                if not ok:
+                    print(f"⚠️  分块 {i} 上传失败: {value}")
                     continue
-
-                try:
-                    data = json.loads(result.stdout)
-                    source_id = data['source']['id']
-                    source_ids.append(source_id)
-                    print(f"   ✅ 成功 (ID: {source_id[:8]}...)")
-                except:
-                    print(f"⚠️  分块 {i} 解析失败")
+                source_ids.append(value)
+                print(f"   ✅ 成功 (ID: {value[:8]}...)")
 
             return {
                 "success": len(source_ids) > 0,
@@ -582,61 +608,48 @@ class ZLibraryAutoUploader:
             if len(title) > 50:
                 title = title[:50] + "..."
 
-        # 创建笔记本
-        print(f"📚 创建笔记本: {title}")
-        import subprocess
-        import json
-
-        cmd = f"notebooklm create '{title}' --json"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-
-        if result.returncode != 0:
-            return {"success": False, "error": result.stderr}
-
-        try:
-            data = json.loads(result.stdout)
-            notebook_id = data['notebook']['id']
+        if notebook_id:
+            print(f"📚 使用已有笔记本 (ID: {notebook_id[:8]}...)")
+        else:
+            print(f"📚 创建笔记本: {title}")
+            notebook_id = self._create_notebook(title)
+            if not notebook_id:
+                return {"success": False, "error": "创建或解析笔记本 ID 失败"}
             print(f"✅ 笔记本已创建 (ID: {notebook_id[:8]}...)")
-        except:
-            return {"success": False, "error": "解析笔记本 ID 失败"}
-
-        # 设置上下文
-        print(f"🎯 设置笔记本上下文...")
-        cmd = f"notebooklm use {notebook_id}"
-        subprocess.run(cmd, shell=True, capture_output=True)
 
         # 上传文件
         print(f"📄 上传文件...")
-        cmd = f"notebooklm source add '{file_path}' --json"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        ok, value = self._upload_source_to_notebook(file_path, notebook_id)
+        if not ok:
+            return {"success": False, "error": value}
 
-        if result.returncode != 0:
-            return {"success": False, "error": result.stderr}
+        print(f"✅ 上传成功 (ID: {value[:8]}...)")
+        return {
+            "success": True,
+            "notebook_id": notebook_id,
+            "source_id": value,
+            "title": title
+        }
 
-        try:
-            data = json.loads(result.stdout)
-            source_id = data['source']['id']
-            print(f"✅ 上传成功 (ID: {source_id[:8]}...)")
 
-            return {
-                "success": True,
-                "notebook_id": notebook_id,
-                "source_id": source_id,
-                "title": title
-            }
-        except:
-            return {"success": False, "error": "解析来源 ID 失败"}
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments before starting browser automation."""
+    parser = argparse.ArgumentParser(
+        prog="upload.py",
+        description="Z-Library 全自动下载并上传到 NotebookLM",
+    )
+    parser.add_argument(
+        "url",
+        metavar="Z-Library URL",
+        help="要下载并上传的 Z-Library 书籍页面 URL",
+    )
+    return parser.parse_args(argv)
 
 
 async def main():
     """主函数"""
-    if len(sys.argv) < 2:
-        print("Z-Library 全自动下载并上传到 NotebookLM")
-        print("")
-        print("用法: python3 auto_download_and_upload.py <Z-Library URL>")
-        sys.exit(1)
-
-    url = sys.argv[1]
+    args = parse_args()
+    url = args.url
     uploader = ZLibraryAutoUploader()
 
     # 下载

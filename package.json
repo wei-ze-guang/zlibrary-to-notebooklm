@@ -2,10 +2,12 @@
   "name": "zlibrary-to-notebooklm",
   "version": "1.0.0",
   "description": "一键将 Z-Library 书籍自动下载并上传到 Google NotebookLM",
-  "main": "src/uploader.py",
+  "main": "scripts/upload.py",
   "scripts": {
-    "login": "python3 bin/login.py",
-    "upload": "python3 bin/upload.py"
+    "login": "python3 scripts/login.py",
+    "upload": "python3 scripts/upload.py",
+    "search": "python3 scripts/search.py",
+    "web": "python3 scripts/web_api.py"
   },
   "keywords": [
     "zlibrary",
