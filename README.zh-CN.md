@@ -318,12 +318,26 @@ python3 scripts/web_api.py
 本地工作台提供的 API：
 
 - `GET /api/search?q=<关键词>&limit=50`
+- `GET /api/browser/status`
+- `POST /api/browser/start`，请求体为 `{"headless":true,"keep_open":true}`
+- `POST /api/browser/close`，可选请求体为 `{"force":true}`
+- `POST /api/browser/restart`
 - `GET /api/notebooks`
 - `POST /api/notebooks`，请求体为 `{"title":"知识库名称"}`
 - `POST /api/upload`，请求体为 `{"zlibrary_url":"...","notebook_id":"..."}` 或 `{"zlibrary_url":"...","notebook_title":"..."}`
+- `POST /api/download`，请求体为 `{"zlibrary_url":"..."}`，只下载到本地任务工作区，不上传
 - `GET /api/local-files`
-- `POST /api/upload-local`，请求体为 `{"local_path":"...","notebook_id":"..."}` 或 `{"local_path":"...","notebook_title":"..."}`
+- `POST /api/process-local`，请求体为 `{"task_id":"...","local_path":"...","strategy":"keep|replace|version"}`，只处理/分片本地工作区文件，不上传；已经处理过的文件必须明确选择保留、覆盖或生成新版本
+- `POST /api/upload-local`，请求体为 `{"task_id":"...","local_path":"...","notebook_id":"..."}` 或 `{"task_id":"...","local_path":"...","notebook_title":"..."}`
+- `POST /api/upload-source`，请求体为 `{"task_id":"...","source_path":"...","notebook_id":"..."}`，从详情弹窗单独上传一个来源/分片
+- `POST /api/upload-sources`，请求体为 `{"task_id":"...","source_paths":["..."],"notebook_id":"..."}`，一次上传勾选的多个来源/分片
 - `GET /api/tasks/<task_id>`
+
+Web 搜索结果现在提供“下载”和“下载并上传”两个动作，并会按规范化后的 Z-Library 书籍键标出本地是否已有、是否已分片、是否已上传或上传失败；如果同一本书已有本地文件，再下载会提示并创建新任务，不覆盖旧文件。本地文件区域保持紧凑折叠，点击“详情”可查看原始文件、处理结果、上传到的知识库、可上传来源状态和失败原因。PDF/单文件会显示为 1 个可上传来源，分片后的 Markdown 会显示为多个可上传来源；详情页可以单独选择本次上传知识库、全选/只选失败/只选未完成来源、上传勾选来源，并按来源折叠查看上传记录。已有处理结果上传时不会静默重新转换或重新分片。任务区会显示阶段进度；如果下载失败，会立即收敛为失败状态并提供重试下载、重启浏览器、查看日志等恢复动作。详细日志默认折叠为右下角按钮，展开后以抽屉形式显示，不再占用主业务列。
+
+工作台的显示状态以后端任务和 `manifest.json` 为准。轮询任务时会同步刷新本地文件；任务完成或失败时会额外刷新浏览器和登录状态。即使后端重启导致内存任务表丢失，任务接口也会从 manifest 恢复状态，避免前端一直停在旧的“运行中”状态。
+
+Web/VSCode 工作台还会托管一个可复用的 Z-Library 自动化浏览器。搜索和下载优先复用这个浏览器上下文，避免每次操作都重新启动 Chromium。工作台里可以查看浏览器状态、启动、关闭或重启；浏览器忙碌时普通关闭会被拒绝，VSCode 插件停止后端前会请求后端强制关闭浏览器，后端也会在空闲超时后自动释放资源。
 
 ### npm 脚本快捷方式
 
@@ -376,8 +390,8 @@ pnpm build
 ✅ **自动文件分块**：
 - 每个上传任务会使用独立工作目录：`/tmp/zlibrary-to-notebooklm/tasks/<task-id>/`
 - 原始下载写入 `downloads/`；转换后的 Markdown 和分块写入 `books/<book-slug>/`
-- 每个任务会写入 `manifest.json`，Web/VSCode 工作台可在上传失败或后端重启后继续看到本地文件
-- 如果下载已成功但上传失败，可在工作台的本地文件列表中直接重试上传，不需要重新下载
+- 每个任务会写入 `manifest.json`，记录原始文件、处理文件、可上传来源、上传记录和失败原因；Web/VSCode 工作台可在上传失败或后端重启后继续看到本地文件
+- 如果下载已成功但上传失败，可在工作台的本地文件详情中直接处理/分片、重新上传全部来源，不需要重新下载
 - EPUB 会先转换为 Markdown；`.md`、`.markdown`、`.txt` 会直接统计词数
 - 超过 350,000 词的文本会生成稳定分块文件，例如 `book-slug_part_001_of_008.md`
 - 每个分块会单独上传到同一个 NotebookLM 笔记本，标题类似 `Book Slug - Part 001/008`

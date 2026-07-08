@@ -7,7 +7,7 @@ This extension opens the existing Z-Library to NotebookLM workbench inside VSCod
 - Starts `scripts/web_api.py` automatically on a free localhost port.
 - Opens a VSCode Webview with the current React/Vite workbench.
 - Reuses the existing Z-Library login, NotebookLM CLI login, search, notebook selection, upload, conversion, chunking, and task log flows.
-- Stops the backend process when the extension is deactivated or when the stop command is run.
+- Stops the backend process when the extension is deactivated or when the stop command is run. Before killing the backend, it asks `/api/browser/close` to release the managed automation browser.
 
 ## Commands
 

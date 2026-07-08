@@ -7,6 +7,7 @@ const {
   buildBackendEnv,
   buildBackendArgs,
   buildWorkbenchUrl,
+  closeBackendGracefully,
   createNonce,
   getProjectRoot,
   renderWorkbenchHtml,
@@ -26,7 +27,10 @@ function getOutputChannel() {
   return outputChannel;
 }
 
-function stopBackend() {
+async function stopBackend() {
+  if (backendUrl) {
+    await closeBackendGracefully(backendUrl, 1500);
+  }
   if (backendProcess && !backendProcess.killed) {
     backendProcess.kill();
   }
@@ -36,7 +40,7 @@ function stopBackend() {
 
 async function startBackend(context, forceRestart = false) {
   if (forceRestart) {
-    stopBackend();
+    await stopBackend();
   }
   if (backendProcess && backendUrl && backendProcess.exitCode === null) {
     return backendUrl;
@@ -74,7 +78,7 @@ async function startBackend(context, forceRestart = false) {
     await waitForHttp(url);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    stopBackend();
+    await stopBackend();
     throw new Error(`后端启动失败: ${message}`);
   }
 
@@ -136,15 +140,15 @@ function activate(context) {
   context.subscriptions.push(
     vscode.commands.registerCommand("zlibraryToNotebooklm.openWorkbench", () => openWorkbench(context)),
     vscode.commands.registerCommand("zlibraryToNotebooklm.restartBackend", () => restartBackend(context)),
-    vscode.commands.registerCommand("zlibraryToNotebooklm.stopBackend", () => {
-      stopBackend();
+    vscode.commands.registerCommand("zlibraryToNotebooklm.stopBackend", async () => {
+      await stopBackend();
       vscode.window.showInformationMessage("Z-Library to NotebookLM 后端已停止");
     }),
   );
 }
 
 function deactivate() {
-  stopBackend();
+  return stopBackend();
 }
 
 module.exports = {

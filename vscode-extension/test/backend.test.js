@@ -8,6 +8,7 @@ const {
   buildBackendEnv,
   buildBackendArgs,
   buildWorkbenchUrl,
+  closeBackendGracefully,
   getProjectRoot,
   renderWorkbenchHtml,
   selectPythonCommand,
@@ -77,4 +78,23 @@ test("renderWorkbenchHtml embeds the backend iframe and CSP", () => {
   assert.match(html, /src="http:\/\/127\.0\.0\.1:51234"/);
   assert.match(html, /frame-src http:\/\/127\.0\.0\.1:51234/);
   assert.match(html, /nonce-abc123/);
+});
+
+test("closeBackendGracefully posts browser close before resolving", async () => {
+  const calls = [];
+  const server = require("node:http").createServer((request, response) => {
+    calls.push({ method: request.method, url: request.url });
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end("{}");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+
+  try {
+    await closeBackendGracefully(`http://127.0.0.1:${port}`, 1000);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+
+  assert.deepEqual(calls, [{ method: "POST", url: "/api/browser/close" }]);
 });

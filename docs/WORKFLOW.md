@@ -208,23 +208,54 @@ http://127.0.0.1:7860
 Web 工作台支持：
 
 - 搜索 Z-Library
+- 查看、启动、关闭、重启可复用的 Z-Library 自动化浏览器
+- 在搜索结果中选择“下载”或“下载并上传”
+- 搜索结果会和本地任务 manifest 按规范化后的 Z-Library 书籍键匹配，标出未下载、已下载、已分片、已上传或失败状态
 - 查看 NotebookLM 笔记本列表
 - 创建 NotebookLM 笔记本
 - 选择已有笔记本并上传
-- 查看本地已下载文件和上传状态
-- 上传失败后复用本地文件重试，不重新下载
-- 查看上传任务状态和日志
+- 查看本地已下载文件、处理结果、可上传来源和上传状态
+- 在本地文件详情弹窗中处理/分片、上传全部来源或重新上传全部来源，不重新下载
+- 查看下载/处理/上传的阶段进度；详细日志默认折叠为右下角按钮，需要排查时再展开日志抽屉
+
+搜索结果与本地文件的主匹配键是规范化后的 Z-Library URL 路径，例如 `https://zh.zlib.li/book/123/title?token=...` 会归一为 `book/123/title`。不同 Z-Library 域名、query 或 hash 不影响匹配。如果同一本书有多个本地任务，工作台默认展示最新任务，并在搜索结果中提示本地份数；再次点击下载会提示用户已有本地文件，确认后会创建新的本地任务，不覆盖旧文件。
+
+下载进度目前是阶段进度，不是字节级下载百分比。原因是 Playwright 的下载保存接口不能稳定提供实时字节数。工作台会显示准备下载、等待下载、保存文件、处理/分片、上传等阶段百分比；如果后续能拿到稳定直链，才适合升级为真实字节进度。
+
+如果下载失败，后端会把任务统一收敛到 `status=failed`、`stage=failed`、`progress.phase=failed`，前端会停止显示“正在下载”，并在当前任务卡中给出失败原因和恢复动作：
+
+- 重试下载：重新创建下载任务
+- 重启浏览器：用于处理托管浏览器状态异常、页面卡住或下载事件超时
+- 查看日志：展开日志抽屉查看 Playwright 或 Z-Library 页面细节
+
+下载失败但没有生成本地文件时，`GET /api/local-files` 不会返回本地资产；这时搜索结果会用当前任务状态标出“下载失败”，而不是误判为“仍在下载”。下载成功但上传失败时，本地文件仍会出现在本地文件列表，用户应进入详情页选择失败来源或全部来源重传。
+
+前端状态以后端任务和 manifest 为准：
+
+- 任务轮询使用 `GET /api/tasks/<task_id>`，每次返回后都会同步刷新 `GET /api/local-files`
+- 任务进入完成或失败后，会额外刷新浏览器状态和登录状态，避免浏览器忙碌、登录失效等状态滞后
+- 本地文件详情弹窗不保存独立真相，它会跟随 `GET /api/local-files` 返回的最新资产刷新
+- 单分片/批量分片上传按钮可以短暂显示“上传中”，但如果请求失败或后端没有创建任务，前端会重新读取后端状态，避免把本地来源永久标成失败
+- 如果后端重启导致内存任务表丢失，`GET /api/tasks/<task_id>` 会从任务目录的 `manifest.json` 恢复任务；`GET /api/tasks` 也会直接扫描 manifest，因此失败但没有生成本地文件的下载任务不会从任务状态里消失
 
 ### API 端点
 
 ```text
 GET  /api/search?q=<关键词>&limit=50
+GET  /api/browser/status
 GET  /api/notebooks
 GET  /api/local-files
 GET  /api/tasks
+POST /api/browser/start
+POST /api/browser/close
+POST /api/browser/restart
 POST /api/notebooks
 POST /api/upload
+POST /api/download
+POST /api/process-local
 POST /api/upload-local
+POST /api/upload-source
+POST /api/upload-sources
 GET  /api/tasks/<task_id>
 ```
 
@@ -239,7 +270,23 @@ GET  /api/tasks/<task_id>
 ```
 
 ```json
+{"zlibrary_url":"https://zh.zlib.li/book/..."}
+```
+
+```json
+{"headless":true,"keep_open":true}
+```
+
+```json
 {"local_path":"/tmp/zlibrary-to-notebooklm/tasks/<task-id>/downloads/book.pdf","notebook_id":"<notebook-id>"}
+```
+
+```json
+{"task_id":"<task-id>","local_path":"/tmp/zlibrary-to-notebooklm/tasks/<task-id>/downloads/book.md","strategy":"keep"}
+```
+
+```json
+{"task_id":"<task-id>","source_paths":["/tmp/zlibrary-to-notebooklm/tasks/<task-id>/books/book/parts/book_part_001_of_003.md"],"notebook_id":"<notebook-id>"}
 ```
 
 ### 本地文件和断点重试
@@ -253,7 +300,18 @@ GET  /api/tasks/<task_id>
 └── books/<book-slug>/  # EPUB 转出的 Markdown 和分块文件
 ```
 
-`manifest.json` 记录任务阶段、下载文件、转换文件、NotebookLM 目标、上传结果和失败原因。Web/VSCode 工作台通过 `GET /api/local-files` 扫描这些 manifest，因此即使上传失败，也能在“本地文件”区域看到已下载文件，并通过 `POST /api/upload-local` 直接重试上传。
+`manifest.json` 记录任务阶段、阶段进度、规范化书籍键、下载文件、转换文件、分片列表、NotebookLM 目标、上传记录和失败原因。Web/VSCode 工作台通过 `GET /api/local-files` 扫描这些 manifest，并返回统一的 `upload_sources` 视图，因此即使上传失败，也能在“本地文件”区域看到已下载文件和每个可上传来源的状态。每个来源还会带上自己的 `upload_records`，用于在详情页按分片折叠查看上传历史、目标知识库、source id 和失败原因。
+
+本地文件详情弹窗用于恢复和排查：
+
+- 原始文件：`downloads/` 中的 PDF/EPUB/其他下载文件
+- 处理结果：PDF/单文件直接作为 1 个来源，EPUB 转出的 Markdown 或超过词数阈值后生成多个来源
+- 可上传来源：每个来源的文件名、大小、上传状态、source id 或失败原因
+- 本次目标：详情弹窗内可重新选择已有知识库或输入新知识库名，不依赖主页面当前选择
+- 批量上传：可全选可传来源、只选失败、只选未完成，也可以单独上传某个来源
+- 上传记录：默认折叠在每个来源下，需要查看某个分片历史时再展开
+
+如果下载已成功但上传失败，优先在详情弹窗点击“只选失败”再“上传已选”，这会调用 `POST /api/upload-sources`。如果只想验证某一个分片，可在来源列表里点击“单传”，这会调用 `POST /api/upload-source`。如果还没有处理结果，可先点击“处理/分片”。如果已经处理/分片过，再次处理必须选择策略：`keep` 保留现有分片，`replace` 覆盖当前处理结果，`version` 生成新版本处理结果；上传现有来源不会重新下载，也不会静默重新转换或重新分片。
 
 ## VSCode 插件流程
 
@@ -268,11 +326,14 @@ GET  /api/tasks/<task_id>
    - Z-Library 登录、完成登录、取消登录
    - NotebookLM 登录、取消登录、刷新状态
    - 搜索书籍和选择结果
+   - 启动、关闭、重启托管浏览器
    - 刷新 NotebookLM 知识库
    - 创建新知识库
    - 上传到 NotebookLM
    - 查看本地文件和重试失败上传
    - 轮询任务日志和结果
+
+插件停止后端或 VSCode 退出时，会先调用 `POST /api/browser/close` 并传入强制关闭参数，让后端优雅关闭托管浏览器，再终止 Python 后端进程。如果 VSCode 异常退出导致通知没有送达，后端浏览器会在空闲超时后自动关闭。
 
 插件额外提供三个命令：
 

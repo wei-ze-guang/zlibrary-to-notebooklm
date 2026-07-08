@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import shutil
 import sys
 import tempfile
@@ -423,6 +424,90 @@ class ZLibraryAutoUploader:
                 traceback.print_exc()
                 await browser.close()
                 return None, None
+
+    def download_from_zlibrary_with_page(self, page, url: str) -> tuple[Path | None, str | None]:
+        """Use an already managed Playwright page to download a Z-Library file."""
+        print("="*70)
+        print("🌐 使用托管浏览器下载")
+        print("="*70)
+
+        storage_state = self.config_dir / "storage_state.json"
+        if not storage_state.exists():
+            print("❌ 未找到会话状态")
+            print("💡 请先运行: python3 scripts/login.py")
+            return None, None
+
+        self.downloads_dir.mkdir(parents=True, exist_ok=True)
+        page.set_default_timeout(60000)
+        print("📖 访问书籍页面...")
+        page.goto(url, wait_until='domcontentloaded', timeout=60000)
+        time.sleep(3)
+
+        downloaded_format = None
+        download_link = None
+        dots_button = page.query_selector('button[aria-label="更多选项"], button[title="更多"], .more-options, [class*="dots"], [class*="more"]')
+        if dots_button:
+            print("📱 检测到新版界面（三点菜单）")
+            dots_button.click()
+            time.sleep(1)
+            pdf_options = page.query_selector_all('a:has-text("PDF"), button:has-text("PDF")')
+            epub_options = page.query_selector_all('a:has-text("EPUB"), button:has-text("EPUB")')
+            if pdf_options:
+                download_link = pdf_options[0]
+                downloaded_format = 'pdf'
+            elif epub_options:
+                download_link = epub_options[0]
+                downloaded_format = 'epub'
+        else:
+            for file_format, selector in (('pdf', 'a[data-convert_to="pdf"]'), ('epub', 'a[data-convert_to="epub"]')):
+                convert_button = page.query_selector(selector)
+                if not convert_button:
+                    continue
+                downloaded_format = file_format
+                convert_button.evaluate('el => el.click()')
+                for _ in range(60):
+                    time.sleep(1)
+                    with contextlib.suppress(Exception):
+                        message = page.query_selector('.message:has-text("转换为")')
+                        if message and file_format in message.inner_text().lower() and '完成' in message.inner_text():
+                            break
+                download_link = page.query_selector(f'a[href*="/dl/"][href*="convertedTo={file_format}"]')
+                if download_link:
+                    break
+
+        if not download_link:
+            for selector in ('a[href*="/dl/"]', 'a:has-text("下载")', 'a:has-text("Download")', 'button:has-text("下载")'):
+                links = page.query_selector_all(selector)
+                for link in links:
+                    href = link.get_attribute('href')
+                    if href and '/dl/' in href:
+                        download_link = link
+                        if 'pdf' in href.lower():
+                            downloaded_format = 'pdf'
+                        elif 'epub' in href.lower():
+                            downloaded_format = 'epub'
+                        break
+                if download_link:
+                    break
+
+        if not download_link:
+            print("❌ 未找到下载链接")
+            return None, None
+
+        try:
+            with page.expect_download(timeout=DEFAULT_DOWNLOAD_EVENT_TIMEOUT_MS) as download_info:
+                download_link.evaluate('el => el.click()')
+            download = download_info.value
+            suggested_filename = download.suggested_filename
+            download_path = self.downloads_dir / suggested_filename
+            download.save_as(download_path)
+            if not downloaded_format and download_path.suffix:
+                downloaded_format = download_path.suffix.lower().lstrip(".")
+            print(f"💾 已保存: {download_path}")
+            return download_path, downloaded_format
+        except Exception as e:
+            print(f"❌ 下载启动或保存失败: {e}")
+            return None, None
 
     def count_words(self, text: str) -> int:
         """统计中英文单词数"""

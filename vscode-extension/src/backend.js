@@ -129,6 +129,37 @@ function waitForHttp(url, timeoutMs = 15000) {
   });
 }
 
+function closeBackendGracefully(url, timeoutMs = 1500) {
+  if (!url) {
+    return Promise.resolve(false);
+  }
+  const target = new URL("/api/browser/close", url);
+  const body = JSON.stringify({ force: true });
+
+  return new Promise((resolve) => {
+    const request = http.request(
+      target,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+        },
+      },
+      (response) => {
+        response.resume();
+        response.on("end", () => resolve(true));
+      },
+    );
+    request.once("error", () => resolve(false));
+    request.setTimeout(timeoutMs, () => {
+      request.destroy();
+      resolve(false);
+    });
+    request.end(body);
+  });
+}
+
 function createNonce() {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   let text = "";
@@ -234,6 +265,7 @@ module.exports = {
   buildBackendEnv,
   buildBackendArgs,
   buildWorkbenchUrl,
+  closeBackendGracefully,
   createNonce,
   getProjectRoot,
   renderWorkbenchHtml,

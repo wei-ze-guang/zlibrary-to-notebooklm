@@ -253,10 +253,13 @@ command not found: notebooklm
 
    - 打开工作台的“本地文件”区域
    - 找到状态为 `failed` 或已下载的文件
-   - 选择 NotebookLM 知识库
-   - 点击“重试”或“上传”
+   - 点击“详情”查看原始文件、处理结果、可上传来源、目标知识库和失败原因
+   - 如果还没有可上传来源，先点击“处理/分片”
+   - 在详情弹窗内选择本次上传的 NotebookLM 知识库
+   - 勾选要上传的来源，或点击“只选失败”
+   - 点击“上传已选 N”或单个来源右侧的“单传”
 
-   这会调用 `/api/upload-local`，不会重新下载 Z-Library 文件。
+   处理/分片会调用 `/api/process-local`，批量上传会调用 `/api/upload-sources`，单个来源上传会调用 `/api/upload-source`，不会重新下载 Z-Library 文件。已有分片再次处理时需要明确选择 `keep`、`replace` 或 `version`；上传已有来源不会静默重新转换或重新分片。
 
 4. 手动上传测试：
 
@@ -324,6 +327,23 @@ python3 scripts/upload.py "https://zh.zlib.li/book/..."
 ```
 
 终端输出通常会给出更完整的 Playwright、下载或 NotebookLM CLI 错误。
+
+### 问题：自动化浏览器一直开着或无法关闭
+
+Web/VSCode 工作台会复用一个托管浏览器来减少搜索、下载时的启动成本。正常情况下可以在页面顶部“自动化浏览器”区域点击“关闭”。
+
+- 如果显示“忙碌”，说明当前有搜索或下载任务正在使用浏览器，普通关闭会被拒绝
+- 如果 VSCode 退出，插件会先请求后端强制关闭浏览器，再停止后端进程
+- 如果 VSCode 异常退出，后端会在空闲超时后自动关闭浏览器
+- 如果状态显示“已异常”或“空闲关闭”，点击“重启”即可重新建立上下文
+
+也可以直接调用：
+
+```bash
+curl -X POST http://127.0.0.1:7860/api/browser/close \
+  -H 'Content-Type: application/json' \
+  -d '{"force":true}'
+```
 
 ---
 

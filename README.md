@@ -317,12 +317,25 @@ python3 scripts/web_api.py
 API endpoints served by the local workbench:
 
 - `GET /api/search?q=<keywords>&limit=50`
+- `GET /api/browser/status`
+- `POST /api/browser/start` with `{"headless":true,"keep_open":true}`
+- `POST /api/browser/close` with optional `{"force":true}`
+- `POST /api/browser/restart`
 - `GET /api/notebooks`
 - `POST /api/notebooks` with `{"title":"Notebook title"}`
 - `POST /api/upload` with `{"zlibrary_url":"...","notebook_id":"..."}` or `{"zlibrary_url":"...","notebook_title":"..."}`
+- `POST /api/download` with `{"zlibrary_url":"..."}` to download a search result into the local task workspace without uploading
 - `GET /api/local-files`
-- `POST /api/upload-local` with `{"local_path":"...","notebook_id":"..."}` or `{"local_path":"...","notebook_title":"..."}`
+- `POST /api/process-local` with `{"task_id":"...","local_path":"...","strategy":"keep|replace|version"}` to convert/split a local workspace file without uploading. Existing processed sources require an explicit strategy.
+- `POST /api/upload-local` with `{"task_id":"...","local_path":"...","notebook_id":"..."}` or `{"task_id":"...","local_path":"...","notebook_title":"..."}`
+- `POST /api/upload-source` with `{"task_id":"...","source_path":"...","notebook_id":"..."}` to upload one source/part from the detail view
+- `POST /api/upload-sources` with `{"task_id":"...","source_paths":["..."],"notebook_id":"..."}` to upload selected sources/parts in one task
 - `GET /api/tasks/<task_id>`
+
+The Web workbench search results include both **Download** and **Download and Upload** actions. The local file area stays compact; open **Details** on a local file to inspect the original file, processed file, generated parts, target notebook, per-part upload status, and failure reason.
+Local assets expose a unified `upload_sources` view: a PDF/direct file is one source, while a split Markdown book is many sources. The detail view lets you choose the notebook for this upload, select all/failed/unfinished sources, upload only the checked sources, and expand upload history per source. Uploading existing sources uses the current processed files and does not silently reconvert or resplit them.
+
+The Web/VSCode workbench also manages a reusable Z-Library automation browser. Search and download tasks prefer the managed browser context, so repeated operations do not need to relaunch Chromium each time. The browser can be started, closed, or restarted from the workbench; it refuses normal close while busy, supports force-close for shutdown, and auto-closes after the idle timeout. The VSCode extension asks the backend to close this browser before stopping the backend process.
 
 ### npm Script Shortcuts
 
