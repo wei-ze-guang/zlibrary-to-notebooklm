@@ -1,9 +1,10 @@
 # 工作流程详解
 
-本文说明当前项目的三条使用链路：
+本文说明当前项目的四条使用链路：
 
 - CLI 主流程：`login.py` → `search.py`（可选）→ `upload.py`
 - Web 工作台：`web_api.py` + `web/` 前端
+- VSCode 插件工作台：`vscode-extension/` 自动启动 `web_api.py` 并在 Webview 中打开同一套前端
 - NotebookLM CLI：由脚本调用 `notebooklm create/list/source add`
 
 ## 完整流程图
@@ -111,6 +112,8 @@ python3 scripts/upload.py "https://zh.zlib.li/book/..."
 
 ## 下载与格式处理
 
+登录流程使用可视浏览器；搜索和下载默认使用无头浏览器复用已保存的 Z-Library 会话，避免每次搜索/下载都弹出窗口。
+
 ### 页面识别
 
 脚本会兼容两类页面：
@@ -169,6 +172,8 @@ notebooklm create "书名" --json
 notebooklm source add "文件路径" --notebook "<notebook-id>" --title "来源标题" --timeout 180 --json
 ```
 
+传给 NotebookLM CLI 的文件路径会先解析为真实路径，避免 macOS `/var`、`/tmp` 这类 symlink 路径被 CLI 拒绝。
+
 如果是 Web 工作台创建的新笔记本，`web_api.py` 会先调用 `notebooklm create`，再把返回的 `notebook_id` 传给上传流程。
 
 分块上传时，来源标题会带上序号，例如 `Book Slug - Part 001/008`。如果任意分块上传失败，任务整体会失败，并返回已成功的 `source_ids` 和失败分块路径，避免用户误以为整本书已经完整上传。
@@ -206,15 +211,20 @@ Web 工作台支持：
 - 查看 NotebookLM 笔记本列表
 - 创建 NotebookLM 笔记本
 - 选择已有笔记本并上传
+- 查看本地已下载文件和上传状态
+- 上传失败后复用本地文件重试，不重新下载
 - 查看上传任务状态和日志
 
 ### API 端点
 
 ```text
-GET  /api/search?q=<关键词>&limit=12
+GET  /api/search?q=<关键词>&limit=50
 GET  /api/notebooks
+GET  /api/local-files
+GET  /api/tasks
 POST /api/notebooks
 POST /api/upload
+POST /api/upload-local
 GET  /api/tasks/<task_id>
 ```
 
@@ -226,6 +236,59 @@ GET  /api/tasks/<task_id>
 
 ```json
 {"zlibrary_url":"https://zh.zlib.li/book/...","notebook_id":"<notebook-id>"}
+```
+
+```json
+{"local_path":"/tmp/zlibrary-to-notebooklm/tasks/<task-id>/downloads/book.pdf","notebook_id":"<notebook-id>"}
+```
+
+### 本地文件和断点重试
+
+每个上传任务都会写入独立工作目录：
+
+```text
+/tmp/zlibrary-to-notebooklm/tasks/<task-id>/
+├── manifest.json
+├── downloads/          # 原始 PDF/EPUB/其他下载文件
+└── books/<book-slug>/  # EPUB 转出的 Markdown 和分块文件
+```
+
+`manifest.json` 记录任务阶段、下载文件、转换文件、NotebookLM 目标、上传结果和失败原因。Web/VSCode 工作台通过 `GET /api/local-files` 扫描这些 manifest，因此即使上传失败，也能在“本地文件”区域看到已下载文件，并通过 `POST /api/upload-local` 直接重试上传。
+
+## VSCode 插件流程
+
+插件目录位于 `vscode-extension/`。它不重写业务逻辑，而是复用当前 Web 工作台：
+
+1. 用户在命令面板执行 `Z-Library to NotebookLM: Open Workbench`
+2. 插件读取 `zlibraryToNotebooklm.pythonPath`，未配置时使用 `PYTHON` 或 `python3`
+3. 插件分配一个空闲 localhost 端口
+4. 插件运行 `scripts/web_api.py --host 127.0.0.1 --port <port>`
+5. 插件打开 VSCode Webview，并通过 iframe 加载 `http://127.0.0.1:<port>`
+6. Webview 中的所有按钮继续调用同一套 `/api/*`：
+   - Z-Library 登录、完成登录、取消登录
+   - NotebookLM 登录、取消登录、刷新状态
+   - 搜索书籍和选择结果
+   - 刷新 NotebookLM 知识库
+   - 创建新知识库
+   - 上传到 NotebookLM
+   - 查看本地文件和重试失败上传
+   - 轮询任务日志和结果
+
+插件额外提供三个命令：
+
+```text
+Z-Library to NotebookLM: Open Workbench
+Z-Library to NotebookLM: Restart Backend
+Z-Library to NotebookLM: Stop Backend
+```
+
+开发验证：
+
+```bash
+cd web
+pnpm build
+cd ../vscode-extension
+pnpm test
 ```
 
 也可以用 `notebook_title` 让后端先创建新笔记本：

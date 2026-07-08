@@ -6,12 +6,15 @@ Local web API for the Z-Library to NotebookLM workbench.
 from __future__ import annotations
 
 import asyncio
+import argparse
 import contextlib
 import io
 import json
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -32,6 +35,7 @@ from scripts.browser import choose_chromium_launch_options, choose_system_browse
 
 WEB_DIST_DIR = ROOT_DIR / "web" / "dist"
 WEB_PUBLIC_DIR = ROOT_DIR / "web"
+WORKSPACE_ROOT = Path(tempfile.gettempdir()) / "zlibrary-to-notebooklm" / "tasks"
 ZLIBRARY_LOGIN_TIMEOUT_SECONDS = 15 * 60
 DEFAULT_SEARCH_LIMIT = 50
 MAX_SEARCH_LIMIT = 80
@@ -55,10 +59,19 @@ class UploadTask:
     zlibrary_url: str
     notebook_id: str | None = None
     notebook_title: str | None = None
+    mode: str = "remote"
+    local_path: str | None = None
+    downloaded_file: str | None = None
+    final_file: str | None = None
+    file_format: str | None = None
+    stage: str = "queued"
     status: str = "queued"
     logs: list[str] = field(default_factory=list)
     result: dict[str, Any] | None = None
     error: str | None = None
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+    workspace_root: Path = WORKSPACE_ROOT
 
 
 class ZLibraryLoginSession:
@@ -215,6 +228,103 @@ def parse_created_notebook(stdout: str) -> dict[str, str]:
     return {"id": notebook_id, "title": title or notebook_id}
 
 
+def safe_task_id(value: str) -> str:
+    text = re.sub(r"[^\w.-]+", "-", value, flags=re.UNICODE).strip("-.")
+    return text or uuid.uuid4().hex
+
+
+def task_manifest_path(task_id: str, workspace_root: Path = WORKSPACE_ROOT) -> Path:
+    return workspace_root / safe_task_id(task_id) / "manifest.json"
+
+
+def serialize_task(task: UploadTask) -> dict[str, Any]:
+    return {
+        "id": task.id,
+        "zlibrary_url": task.zlibrary_url,
+        "notebook_id": task.notebook_id,
+        "notebook_title": task.notebook_title,
+        "mode": task.mode,
+        "local_path": task.local_path,
+        "downloaded_file": task.downloaded_file,
+        "final_file": task.final_file,
+        "file_format": task.file_format,
+        "stage": task.stage,
+        "status": task.status,
+        "logs": task.logs,
+        "result": task.result,
+        "error": task.error,
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+    }
+
+
+def save_task_manifest(task: UploadTask) -> None:
+    task.updated_at = time.time()
+    path = task_manifest_path(task.id, task.workspace_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(serialize_task(task), ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def resolve_safe_local_file(path_value: str, workspace_root: Path = WORKSPACE_ROOT) -> Path:
+    raw_path = Path(path_value).expanduser()
+    file_path = raw_path.resolve()
+    root = workspace_root.resolve()
+    try:
+        file_path.relative_to(root)
+    except ValueError as exc:
+        raise BadRequest("只能选择任务工作区内的本地文件") from exc
+    if not file_path.is_file():
+        raise BadRequest("本地文件不存在")
+    return file_path
+
+
+def _asset_from_manifest(manifest: dict[str, Any], workspace_root: Path) -> dict[str, Any] | None:
+    raw_path = manifest.get("final_file") or manifest.get("downloaded_file") or manifest.get("local_path")
+    if not raw_path:
+        return None
+    try:
+        local_path = resolve_safe_local_file(str(raw_path), workspace_root)
+    except BadRequest:
+        return None
+
+    stat = local_path.stat()
+    return {
+        "task_id": manifest.get("id") or local_path.parent.parent.name,
+        "filename": local_path.name,
+        "local_path": str(local_path),
+        "extension": local_path.suffix.lower().lstrip(".") or str(manifest.get("file_format") or ""),
+        "size": stat.st_size,
+        "mtime": stat.st_mtime,
+        "mode": manifest.get("mode", "remote"),
+        "status": manifest.get("status", "downloaded"),
+        "stage": manifest.get("stage"),
+        "zlibrary_url": manifest.get("zlibrary_url"),
+        "notebook_id": manifest.get("notebook_id"),
+        "notebook_title": manifest.get("notebook_title"),
+        "file_format": manifest.get("file_format"),
+        "error": manifest.get("error"),
+        "result": manifest.get("result"),
+        "updated_at": manifest.get("updated_at", stat.st_mtime),
+    }
+
+
+def scan_local_assets(workspace_root: Path = WORKSPACE_ROOT) -> list[dict[str, Any]]:
+    if not workspace_root.exists():
+        return []
+
+    assets = []
+    for manifest_path in workspace_root.glob("*/manifest.json"):
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        asset = _asset_from_manifest(manifest, workspace_root)
+        if asset:
+            assets.append(asset)
+
+    return sorted(assets, key=lambda item: float(item.get("updated_at") or 0), reverse=True)
+
+
 def create_task(zlibrary_url: str, notebook_id: str | None = None, notebook_title: str | None = None) -> UploadTask:
     task = UploadTask(
         id=uuid.uuid4().hex,
@@ -225,20 +335,35 @@ def create_task(zlibrary_url: str, notebook_id: str | None = None, notebook_titl
     )
     with TASKS_LOCK:
         TASKS[task.id] = task
+    save_task_manifest(task)
     return task
 
 
-def serialize_task(task: UploadTask) -> dict[str, Any]:
-    return {
-        "id": task.id,
-        "zlibrary_url": task.zlibrary_url,
-        "notebook_id": task.notebook_id,
-        "notebook_title": task.notebook_title,
-        "status": task.status,
-        "logs": task.logs,
-        "result": task.result,
-        "error": task.error,
-    }
+def create_local_upload_task(
+    local_path: str,
+    notebook_id: str | None = None,
+    notebook_title: str | None = None,
+    workspace_root: Path = WORKSPACE_ROOT,
+) -> UploadTask:
+    file_path = resolve_safe_local_file(local_path, workspace_root)
+    task = UploadTask(
+        id=uuid.uuid4().hex,
+        zlibrary_url="",
+        notebook_id=notebook_id,
+        notebook_title=notebook_title,
+        mode="local",
+        local_path=str(file_path),
+        downloaded_file=str(file_path),
+        final_file=str(file_path),
+        file_format=file_path.suffix.lower().lstrip(".") or None,
+        stage="queued",
+        logs=["本地文件上传任务已创建"],
+        workspace_root=workspace_root,
+    )
+    with TASKS_LOCK:
+        TASKS[task.id] = task
+    save_task_manifest(task)
+    return task
 
 
 def zlibrary_config_dir() -> Path:
@@ -543,19 +668,26 @@ class Tee(io.StringIO):
 
 def run_upload_task(task: UploadTask) -> None:
     task.status = "running"
+    task.stage = "downloading"
     task.logs.append("开始下载书籍")
-    uploader = ZLibraryAutoUploader(task_id=task.id)
+    save_task_manifest(task)
+    uploader = ZLibraryAutoUploader(task_id=task.id, workspace_root=task.workspace_root)
 
     try:
         if not task.notebook_id:
             if not task.notebook_title:
                 raise ValueError("请选择知识库或输入新知识库名称")
+            task.stage = "creating_notebook"
             task.logs.append(f"创建知识库: {task.notebook_title}")
+            save_task_manifest(task)
             notebook = create_notebook(task.notebook_title)
             task.notebook_id = notebook["id"]
             task.notebook_title = notebook["title"]
+            save_task_manifest(task)
 
         with contextlib.redirect_stdout(Tee(task)):
+            task.stage = "downloading"
+            save_task_manifest(task)
             downloaded = asyncio.run(uploader.download_from_zlibrary(task.zlibrary_url))
             if not downloaded:
                 raise RuntimeError("下载失败，未返回文件")
@@ -563,24 +695,97 @@ def run_upload_task(task: UploadTask) -> None:
             downloaded_file, file_format = downloaded
             if not downloaded_file:
                 raise RuntimeError("下载失败，未找到文件")
+            task.downloaded_file = str(downloaded_file)
+            task.file_format = file_format
+            task.stage = "downloaded"
+            save_task_manifest(task)
 
+            task.stage = "converting"
+            save_task_manifest(task)
             final_file = uploader.convert_to_txt(downloaded_file, file_format)
+            if isinstance(final_file, list):
+                task.final_file = str(final_file[0]) if final_file else None
+            else:
+                task.final_file = str(final_file)
+            task.stage = "uploading"
+            save_task_manifest(task)
             result = uploader.upload_to_notebooklm(final_file, notebook_id=task.notebook_id)
 
+        task.result = result
         if not result.get("success"):
             raise RuntimeError(result.get("error", "上传失败"))
 
-        task.result = result
+        task.stage = "uploaded"
         task.status = "completed"
         task.logs.append("上传完成")
+        save_task_manifest(task)
     except Exception as exc:
         task.error = str(exc)
         task.status = "failed"
         task.logs.append(f"失败: {exc}")
+        save_task_manifest(task)
+
+
+def run_local_upload_task(task: UploadTask) -> None:
+    task.status = "running"
+    task.stage = "uploading"
+    task.logs.append("开始上传本地文件")
+    save_task_manifest(task)
+    uploader = ZLibraryAutoUploader(task_id=task.id, workspace_root=task.workspace_root)
+
+    try:
+        if not task.local_path:
+            raise ValueError("请选择本地文件")
+
+        local_file = resolve_safe_local_file(task.local_path, task.workspace_root)
+        task.local_path = str(local_file)
+        task.downloaded_file = str(local_file)
+        task.file_format = local_file.suffix.lower().lstrip(".") or task.file_format
+
+        if not task.notebook_id:
+            if not task.notebook_title:
+                raise ValueError("请选择知识库或输入新知识库名称")
+            task.stage = "creating_notebook"
+            task.logs.append(f"创建知识库: {task.notebook_title}")
+            save_task_manifest(task)
+            notebook = create_notebook(task.notebook_title)
+            task.notebook_id = notebook["id"]
+            task.notebook_title = notebook["title"]
+
+        with contextlib.redirect_stdout(Tee(task)):
+            task.stage = "converting"
+            save_task_manifest(task)
+            final_file = uploader.convert_to_txt(local_file, task.file_format)
+            if isinstance(final_file, list):
+                task.final_file = str(final_file[0]) if final_file else None
+            else:
+                task.final_file = str(final_file)
+            task.stage = "uploading"
+            save_task_manifest(task)
+            result = uploader.upload_to_notebooklm(final_file, notebook_id=task.notebook_id)
+
+        task.result = result
+        if not result.get("success"):
+            raise RuntimeError(result.get("error", "上传失败"))
+
+        task.stage = "uploaded"
+        task.status = "completed"
+        task.logs.append("本地文件上传完成")
+        save_task_manifest(task)
+    except Exception as exc:
+        task.error = str(exc)
+        task.status = "failed"
+        task.logs.append(f"失败: {exc}")
+        save_task_manifest(task)
 
 
 def start_upload_task(task: UploadTask) -> None:
     thread = threading.Thread(target=run_upload_task, args=(task,), daemon=True)
+    thread.start()
+
+
+def start_local_upload_task(task: UploadTask) -> None:
+    thread = threading.Thread(target=run_local_upload_task, args=(task,), daemon=True)
     thread.start()
 
 
@@ -618,6 +823,16 @@ def resolve_static_file(path: str, base: Path) -> Path:
     return file_path
 
 
+def parse_server_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="web_api.py",
+        description="Z-Library to NotebookLM Web Workbench API",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="监听地址，默认 127.0.0.1")
+    parser.add_argument("--port", type=int, default=7860, help="监听端口，默认 7860")
+    return parser.parse_args(argv)
+
+
 class WorkbenchHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -639,6 +854,16 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
 
             if parsed.path == "/api/notebooks":
                 json_response(self, 200, {"notebooks": list_notebooks()})
+                return
+
+            if parsed.path == "/api/local-files":
+                json_response(self, 200, {"assets": scan_local_assets()})
+                return
+
+            if parsed.path == "/api/tasks":
+                with TASKS_LOCK:
+                    tasks = list(TASKS.values())
+                json_response(self, 200, {"tasks": [serialize_task(task) for task in tasks]})
                 return
 
             if parsed.path.startswith("/api/tasks/"):
@@ -710,6 +935,22 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
                 json_response(self, 202, serialize_task(task))
                 return
 
+            if parsed.path == "/api/upload-local":
+                body = read_json_body(self)
+                local_path = str(body.get("local_path", "")).strip()
+                notebook_id = str(body.get("notebook_id", "")).strip() or None
+                notebook_title = str(body.get("notebook_title", "")).strip() or None
+                if not local_path:
+                    json_response(self, 400, {"error": "请选择本地文件"})
+                    return
+                if not notebook_id and not notebook_title:
+                    json_response(self, 400, {"error": "请选择知识库或输入新知识库名称"})
+                    return
+                task = create_local_upload_task(local_path, notebook_id=notebook_id, notebook_title=notebook_title)
+                start_local_upload_task(task)
+                json_response(self, 202, serialize_task(task))
+                return
+
             json_response(self, 404, {"error": "接口不存在"})
         except BadRequest as exc:
             json_response(self, 400, {"error": str(exc)})
@@ -739,11 +980,17 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         return
 
 
-def main() -> None:
-    server = ThreadingHTTPServer(("127.0.0.1", 7860), WorkbenchHandler)
+def run_server(host: str, port: int) -> None:
+    server = ThreadingHTTPServer((host, port), WorkbenchHandler)
+    actual_host, actual_port = server.server_address
     print("Z-Library to NotebookLM Web Workbench")
-    print("打开: http://127.0.0.1:7860")
+    print(f"打开: http://{actual_host}:{actual_port}")
     server.serve_forever()
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_server_args(argv)
+    run_server(args.host, args.port)
 
 
 if __name__ == "__main__":

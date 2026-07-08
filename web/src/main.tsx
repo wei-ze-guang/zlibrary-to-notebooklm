@@ -35,9 +35,23 @@ type Notebook = {
 type UploadTask = {
   id: string;
   status: "queued" | "running" | "completed" | "failed";
+  stage?: string;
   logs: string[];
   error?: string | null;
   result?: Record<string, unknown> | null;
+};
+
+type LocalAsset = {
+  task_id: string;
+  filename: string;
+  local_path: string;
+  extension: string;
+  size: number;
+  status: string;
+  stage?: string | null;
+  error?: string | null;
+  notebook_id?: string | null;
+  updated_at?: number;
 };
 
 type AuthSession = {
@@ -96,6 +110,23 @@ function resultSubtitle(book: SearchResult): string {
   return parts.length ? parts.join(" · ") : book.details || "暂无详情";
 }
 
+function formatBytes(size: number): string {
+  if (!Number.isFinite(size) || size <= 0) return "0 KB";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = size;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
+}
+
+function formatUpdatedAt(seconds?: number): string {
+  if (!seconds) return "";
+  return new Date(seconds * 1000).toLocaleString([], { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
 function backendUnavailableAuth(message = BACKEND_UNAVAILABLE): AuthStatus {
   return {
     zlibrary: {
@@ -150,6 +181,7 @@ function App() {
   const [newNotebookTitle, setNewNotebookTitle] = useState("");
   const [selectedBook, setSelectedBook] = useState<SearchResult | null>(null);
   const [task, setTask] = useState<UploadTask | null>(null);
+  const [localAssets, setLocalAssets] = useState<LocalAsset[]>([]);
   const [busy, setBusy] = useState("");
   const [authBusy, setAuthBusy] = useState("");
   const [message, setMessage] = useState("");
@@ -164,6 +196,8 @@ function App() {
   const canUpload = useMemo(() => {
     return Boolean(zlibraryReady && notebooklmReady && selectedBook && (selectedNotebookId || newNotebookTitle.trim()));
   }, [zlibraryReady, notebooklmReady, selectedBook, selectedNotebookId, newNotebookTitle]);
+
+  const canUploadLocal = Boolean(notebooklmReady && (selectedNotebookId || newNotebookTitle.trim()));
 
   async function loadAuthStatus(silent = false) {
     if (!silent) setAuthBusy("status");
@@ -217,6 +251,18 @@ function App() {
       setMessage(error instanceof Error ? error.message : "读取知识库失败");
     } finally {
       setBusy("");
+    }
+  }
+
+  async function loadLocalAssets(silent = false) {
+    if (!silent) setBusy("local-assets");
+    try {
+      const data = await api<{ assets: LocalAsset[] }>("/api/local-files");
+      setLocalAssets(data.assets);
+    } catch (error) {
+      if (!silent) setMessage(error instanceof Error ? error.message : "读取本地文件失败");
+    } finally {
+      if (!silent) setBusy("");
     }
   }
 
@@ -287,6 +333,7 @@ function App() {
         }),
       });
       setTask(data);
+      loadLocalAssets(true);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "上传启动失败");
     } finally {
@@ -294,8 +341,35 @@ function App() {
     }
   }
 
+  async function uploadLocalAsset(asset: LocalAsset) {
+    if (!canUploadLocal) {
+      setMessage("请先登录 NotebookLM 并选择或创建知识库");
+      return;
+    }
+
+    setBusy(`local:${asset.local_path}`);
+    setMessage("");
+    try {
+      const data = await api<UploadTask>("/api/upload-local", {
+        method: "POST",
+        body: JSON.stringify({
+          local_path: asset.local_path,
+          notebook_id: selectedNotebookId || undefined,
+          notebook_title: selectedNotebookId ? undefined : newNotebookTitle.trim(),
+        }),
+      });
+      setTask(data);
+      loadLocalAssets(true);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "本地上传启动失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
   useEffect(() => {
     loadAuthStatus();
+    loadLocalAssets(true);
   }, []);
 
   useEffect(() => {
@@ -319,6 +393,9 @@ function App() {
       try {
         const data = await api<UploadTask>(`/api/tasks/${taskId}`);
         setTask(data);
+        if (data.status === "completed" || data.status === "failed") {
+          loadLocalAssets(true);
+        }
       } catch (error) {
         setMessage(error instanceof Error ? error.message : "任务状态读取失败");
       }
@@ -495,6 +572,42 @@ function App() {
             </div>
           </div>
 
+          <div className="local-assets">
+            <div className="local-assets-heading">
+              <span>本地文件</span>
+              <button className="mini-button ghost" onClick={() => loadLocalAssets()} disabled={busy === "local-assets"}>
+                <RefreshCcw size={14} className={busy === "local-assets" ? "spin" : ""} />
+                刷新
+              </button>
+            </div>
+            <div className="local-assets-list">
+              {localAssets.length ? (
+                localAssets.slice(0, 8).map((asset) => (
+                  <div className={`local-asset ${asset.status}`} key={`${asset.task_id}-${asset.local_path}`}>
+                    <div className="local-asset-main">
+                      <strong>{asset.filename}</strong>
+                      <small>
+                        {(asset.extension || "file").toUpperCase()} · {formatBytes(asset.size)} · {asset.stage || asset.status}
+                        {asset.updated_at ? ` · ${formatUpdatedAt(asset.updated_at)}` : ""}
+                      </small>
+                      {asset.error && <em>{asset.error}</em>}
+                    </div>
+                    <button
+                      className="mini-button"
+                      onClick={() => uploadLocalAsset(asset)}
+                      disabled={!canUploadLocal || busy === `local:${asset.local_path}` || asset.status === "completed"}
+                    >
+                      {busy === `local:${asset.local_path}` ? <Loader2 className="spin" size={14} /> : <UploadCloud size={14} />}
+                      {asset.status === "failed" ? "重试" : "上传"}
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <div className="local-empty">暂无本地下载文件</div>
+              )}
+            </div>
+          </div>
+
           <button className="upload-button" onClick={uploadBook} disabled={!canUpload || busy === "upload"}>
             {busy === "upload" ? <Loader2 className="spin" size={20} /> : <UploadCloud size={20} />}
             上传到 NotebookLM
@@ -510,6 +623,9 @@ function App() {
             <span className={`task-status ${task?.status || "idle"}`}>{task?.status || "idle"}</span>
           </div>
           <div className="log-box">
+            {task?.error && (
+              <div className="task-error">失败原因：{task.error}</div>
+            )}
             {(task?.logs?.length ? task.logs : ["等待上传任务..."]).map((line, index) => (
               <div key={`${line}-${index}`}>{line}</div>
             ))}

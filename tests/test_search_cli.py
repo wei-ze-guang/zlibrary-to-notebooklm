@@ -1,8 +1,12 @@
 import contextlib
+import asyncio
 import io
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
-from scripts.search import build_search_url, extract_search_results, format_results, is_networkidle_timeout, parse_args
+from scripts.search import build_search_url, extract_search_results, format_results, is_networkidle_timeout, parse_args, search_zlibrary
 
 
 class SearchCliTest(unittest.TestCase):
@@ -119,6 +123,58 @@ class SearchCliTest(unittest.TestCase):
 
         self.assertIn("1. Example Book", output)
         self.assertIn("链接: https://zh.zlib.li/book/123/example-book", output)
+
+    def test_search_uses_headless_browser_by_default(self):
+        launch_kwargs = {}
+
+        class FakePage:
+            def set_default_timeout(self, _timeout):
+                return None
+
+            async def goto(self, *_args, **_kwargs):
+                return None
+
+            async def wait_for_load_state(self, *_args, **_kwargs):
+                return None
+
+            async def content(self):
+                return "<html></html>"
+
+        class FakeBrowser:
+            def __init__(self):
+                self.pages = [FakePage()]
+
+            async def close(self):
+                return None
+
+        class FakeChromium:
+            async def launch_persistent_context(self, *_args, **kwargs):
+                launch_kwargs.update(kwargs)
+                return FakeBrowser()
+
+        class FakePlaywright:
+            chromium = FakeChromium()
+
+        class FakePlaywrightContext:
+            async def __aenter__(self):
+                return FakePlaywright()
+
+            async def __aexit__(self, *_args):
+                return None
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_dir = root / ".zlibrary"
+            config_dir.mkdir()
+            (config_dir / "storage_state.json").write_text("{}", encoding="utf-8")
+            with patch("scripts.search.Path.home", return_value=root):
+                with patch("scripts.search.get_async_playwright", return_value=lambda: FakePlaywrightContext()):
+                    with patch("scripts.search.choose_chromium_launch_options", return_value=type("Choice", (), {"log": None, "options": {}})()):
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            results = asyncio.run(search_zlibrary("os"))
+
+        self.assertEqual(results, [])
+        self.assertTrue(launch_kwargs["headless"])
 
 
 if __name__ == "__main__":

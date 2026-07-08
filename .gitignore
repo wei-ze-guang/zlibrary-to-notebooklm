@@ -40,6 +40,7 @@ env/
 # Protect sensitive data
 *.json
 !package.json
+!vscode-extension/package.json
 !web/tsconfig.json
 !web/tsconfig.node.json
 !.python-version

@@ -33,7 +33,7 @@ class UploadNotebookTargetTest(unittest.TestCase):
                         "notebooklm",
                         "source",
                         "add",
-                        "/tmp/book's notes.pdf",
+                        str(Path("/tmp/book's notes.pdf").resolve()),
                         "--notebook",
                         "nb123",
                         "--title",
@@ -46,6 +46,31 @@ class UploadNotebookTargetTest(unittest.TestCase):
                 )
             ],
         )
+
+    def test_single_file_upload_passes_resolved_path_to_notebooklm(self):
+        uploader = ZLibraryAutoUploader(task_id="task-1")
+        calls = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            real_dir = Path(temp_dir) / "real"
+            real_dir.mkdir()
+            symlink_dir = Path(temp_dir) / "link"
+            symlink_dir.symlink_to(real_dir, target_is_directory=True)
+            file_path = symlink_dir / "book.pdf"
+            file_path.write_text("pdf", encoding="utf-8")
+            expected_path = str(file_path.resolve())
+
+            def fake_run(args, **kwargs):
+                calls.append((args, kwargs))
+                stdout = '{"source": {"id": "src123"}}'
+                return type("Result", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
+
+            with patch("subprocess.run", side_effect=fake_run):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = uploader.upload_to_notebooklm(file_path, notebook_id="nb123")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(calls[0][0][3], expected_path)
 
     def test_create_notebook_uses_argument_list_for_titles_with_quotes(self):
         uploader = ZLibraryAutoUploader(task_id="task-1")
@@ -169,7 +194,7 @@ class UploadNotebookTargetTest(unittest.TestCase):
 
             def fake_run(args, **kwargs):
                 calls.append((args, kwargs))
-                if str(second) in args:
+                if str(second.resolve()) in args:
                     return type("Result", (), {"returncode": 1, "stdout": "", "stderr": "upload failed"})()
                 return type("Result", (), {"returncode": 0, "stdout": '{"source": {"id": "src1"}}', "stderr": ""})()
 
@@ -181,6 +206,19 @@ class UploadNotebookTargetTest(unittest.TestCase):
         self.assertIn("分块上传失败", result["error"])
         self.assertIn("--title", calls[0][0])
         self.assertIn("Book - Part 001/002", calls[0][0])
+
+    def test_single_file_upload_uses_stdout_when_stderr_is_empty(self):
+        uploader = ZLibraryAutoUploader(task_id="task-1")
+
+        def fake_run(_args, **_kwargs):
+            return type("Result", (), {"returncode": 1, "stdout": "NotebookLM rejected this file", "stderr": ""})()
+
+        with patch("subprocess.run", side_effect=fake_run):
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = uploader.upload_to_notebooklm(Path("/tmp/book.pdf"), notebook_id="nb123")
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "NotebookLM rejected this file")
 
 
 if __name__ == "__main__":

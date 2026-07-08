@@ -284,7 +284,7 @@ async def search_zlibrary(query: str, limit: int = 10, base_url: str = DEFAULT_B
             print(f"ℹ️  {launch_choice.log}")
         browser = await p.chromium.launch_persistent_context(
             user_data_dir=str(config_dir / "browser_profile"),
-            headless=False,
+            headless=True,
             args=["--disable-blink-features=AutomationControlled"],
             **launch_choice.options,
         )

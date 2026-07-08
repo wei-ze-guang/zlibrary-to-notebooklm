@@ -23,6 +23,7 @@ except ImportError:
 
 DEFAULT_CHUNK_MAX_WORDS = 350000
 DEFAULT_UPLOAD_TIMEOUT_SECONDS = 180
+DEFAULT_DOWNLOAD_EVENT_TIMEOUT_MS = 60000
 LARGE_DIRECT_UPLOAD_WARNING_BYTES = 200 * 1024 * 1024
 TEXT_SOURCE_EXTENSIONS = {".md", ".markdown", ".txt"}
 
@@ -191,28 +192,15 @@ class ZLibraryAutoUploader:
 
             browser = await p.chromium.launch_persistent_context(
                 user_data_dir=str(self.config_dir / "browser_profile"),
-                headless=False,
+                headless=True,
                 accept_downloads=True,
+                downloads_path=str(self.downloads_dir),
                 args=['--disable-blink-features=AutomationControlled'],
                 **launch_choice.options,
             )
 
             page = browser.pages[0] if browser.pages else await browser.new_page()
             page.set_default_timeout(60000)
-
-            # 设置下载处理
-            download_path = None
-
-            async def handle_download(download):
-                nonlocal download_path
-                print("✅ 检测到下载开始...")
-                suggested_filename = download.suggested_filename
-                print(f"📄 文件名: {suggested_filename}")
-                download_path = self.downloads_dir / suggested_filename
-                await download.save_as(download_path)
-                print(f"💾 已保存: {download_path}")
-
-            page.on('download', handle_download)
 
             try:
                 # 访问目标页面
@@ -371,16 +359,23 @@ class ZLibraryAutoUploader:
                 print("⬇️  步骤2: 点击下载链接...")
 
                 try:
-                    await download_link.evaluate('el => el.click()')
+                    async with page.expect_download(timeout=DEFAULT_DOWNLOAD_EVENT_TIMEOUT_MS) as download_info:
+                        await download_link.evaluate('el => el.click()')
                     print("✅ 点击成功")
+                    download = await download_info.value
+                    print("⏳ 步骤3: 等待下载完成...")
+                    print("✅ 检测到下载开始...")
+                    suggested_filename = download.suggested_filename
+                    print(f"📄 文件名: {suggested_filename}")
+                    download_path = self.downloads_dir / suggested_filename
+                    await download.save_as(download_path)
+                    print(f"💾 已保存: {download_path}")
+                    if not downloaded_format and download_path.suffix:
+                        downloaded_format = download_path.suffix.lower().lstrip(".")
                 except Exception as e:
-                    print(f"❌ 点击失败: {e}")
+                    print(f"❌ 下载启动或保存失败: {e}")
                     await browser.close()
                     return None, None
-
-                # 等待下载
-                print("⏳ 步骤3: 等待下载完成...")
-                await asyncio.sleep(20)
 
                 # 检查结果
                 if download_path and download_path.exists():
@@ -631,7 +626,8 @@ class ZLibraryAutoUploader:
         import subprocess
         import json
 
-        command = [resolve_notebooklm_command(), "source", "add", str(file_path)]
+        source_path = Path(file_path).resolve()
+        command = [resolve_notebooklm_command(), "source", "add", str(source_path)]
         if notebook_id:
             command.extend(["--notebook", notebook_id])
         if title:
@@ -641,7 +637,7 @@ class ZLibraryAutoUploader:
         result = subprocess.run(command, capture_output=True, text=True, check=False)
 
         if result.returncode != 0:
-            return False, result.stderr
+            return False, result.stderr.strip() or result.stdout.strip() or "notebooklm source add failed"
 
         try:
             data = json.loads(result.stdout)

@@ -32,6 +32,7 @@
 - 📦 **智能分块** - 大型 EPUB/Markdown/TXT 自动分割（>350k 词），确保 CLI 上传成功
 - 🤖 **全自动化** - 一条命令完成整个流程
 - 🖥️ **可视化工作台** - 本地 React/Vite 页面支持搜索、选择知识库和上传
+- 🧩 **VSCode 插件** - 在 VSCode 内打开同一套工作台，并自动启动后端
 - 🎯 **格式自适应** - 处理 PDF、EPUB、Markdown、TXT；其他格式尝试交给 NotebookLM CLI 直传
 - 📊 **进度可视化** - 实时显示下载和转换进度
 
@@ -165,6 +166,25 @@ python3 scripts/web_api.py
 
 打开 `http://127.0.0.1:7860`，即可在页面中搜索书籍、选择已有 NotebookLM 知识库、创建新知识库，并一键上传。
 
+除登录外，搜索和下载会优先使用无头浏览器在后台运行；登录仍会打开可视浏览器，方便手动完成验证。
+
+### VSCode 插件工作台
+
+VSCode 插件复用同一套 Web 工作台和 Python 后端，但会自动选择空闲本地端口并启动后端，不需要手动运行 `scripts/web_api.py`。
+
+```bash
+# 打开插件前先构建前端
+cd web
+pnpm build
+cd ..
+
+# 运行插件辅助测试
+cd vscode-extension
+pnpm test
+```
+
+在 VSCode 命令面板执行 `Z-Library to NotebookLM: Open Workbench`。如果 VSCode 使用了错误的 Python 环境，可把 `zlibraryToNotebooklm.pythonPath` 设置为已安装本项目依赖的 Python 可执行文件。
+
 ### 批量处理
 
 ```bash
@@ -297,10 +317,12 @@ python3 scripts/web_api.py
 
 本地工作台提供的 API：
 
-- `GET /api/search?q=<关键词>&limit=12`
+- `GET /api/search?q=<关键词>&limit=50`
 - `GET /api/notebooks`
 - `POST /api/notebooks`，请求体为 `{"title":"知识库名称"}`
 - `POST /api/upload`，请求体为 `{"zlibrary_url":"...","notebook_id":"..."}` 或 `{"zlibrary_url":"...","notebook_title":"..."}`
+- `GET /api/local-files`
+- `POST /api/upload-local`，请求体为 `{"local_path":"...","notebook_id":"..."}` 或 `{"local_path":"...","notebook_title":"..."}`
 - `GET /api/tasks/<task_id>`
 
 ### npm 脚本快捷方式
@@ -354,6 +376,8 @@ pnpm build
 ✅ **自动文件分块**：
 - 每个上传任务会使用独立工作目录：`/tmp/zlibrary-to-notebooklm/tasks/<task-id>/`
 - 原始下载写入 `downloads/`；转换后的 Markdown 和分块写入 `books/<book-slug>/`
+- 每个任务会写入 `manifest.json`，Web/VSCode 工作台可在上传失败或后端重启后继续看到本地文件
+- 如果下载已成功但上传失败，可在工作台的本地文件列表中直接重试上传，不需要重新下载
 - EPUB 会先转换为 Markdown；`.md`、`.markdown`、`.txt` 会直接统计词数
 - 超过 350,000 词的文本会生成稳定分块文件，例如 `book-slug_part_001_of_008.md`
 - 每个分块会单独上传到同一个 NotebookLM 笔记本，标题类似 `Book Slug - Part 001/008`

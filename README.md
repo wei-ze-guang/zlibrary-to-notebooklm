@@ -32,6 +32,7 @@
 - 📦 **Smart Chunking** - Large EPUB/Markdown/TXT sources auto-split (>350k words) for reliable CLI upload
 - 🤖 **Fully Automated** - Complete workflow with a single command
 - 🖥️ **Visual Workbench** - Local React/Vite page for search, notebook selection, and upload
+- 🧩 **VSCode Extension** - Opens the same workbench in VSCode and starts the backend automatically
 - 🎯 **Format Adaptive** - Handles PDF, EPUB, Markdown, and TXT; other formats are passed through to NotebookLM CLI
 - 📊 **Visual Progress** - Real-time display of download and conversion progress
 
@@ -163,6 +164,25 @@ python3 scripts/web_api.py
 ```
 
 Open `http://127.0.0.1:7860` to search books, select an existing NotebookLM notebook, create a new notebook, and upload with one click.
+
+Except for login, search and download run in a headless browser by default. Login still opens a visible browser so you can complete manual verification.
+
+### VSCode Extension Workbench
+
+The VSCode extension reuses the same web workbench and Python backend, but starts the backend for you on a free localhost port.
+
+```bash
+# Build the frontend once before opening the extension
+cd web
+pnpm build
+cd ..
+
+# Run extension helper tests
+cd vscode-extension
+pnpm test
+```
+
+In VSCode, run `Z-Library to NotebookLM: Open Workbench` from the command palette. If VSCode uses the wrong Python environment, set `zlibraryToNotebooklm.pythonPath` to the Python executable that has the project dependencies installed.
 
 ### Batch Processing
 
@@ -296,10 +316,12 @@ python3 scripts/web_api.py
 
 API endpoints served by the local workbench:
 
-- `GET /api/search?q=<keywords>&limit=12`
+- `GET /api/search?q=<keywords>&limit=50`
 - `GET /api/notebooks`
 - `POST /api/notebooks` with `{"title":"Notebook title"}`
 - `POST /api/upload` with `{"zlibrary_url":"...","notebook_id":"..."}` or `{"zlibrary_url":"...","notebook_title":"..."}`
+- `GET /api/local-files`
+- `POST /api/upload-local` with `{"local_path":"...","notebook_id":"..."}` or `{"local_path":"...","notebook_title":"..."}`
 - `GET /api/tasks/<task_id>`
 
 ### npm Script Shortcuts
@@ -353,6 +375,8 @@ This project is optimized for NotebookLM's actual limitations:
 ✅ **Automatic File Chunking**:
 - Each upload task gets an isolated workspace under `/tmp/zlibrary-to-notebooklm/tasks/<task-id>/`
 - Downloads are stored in `downloads/`; converted Markdown and parts are stored in `books/<book-slug>/`
+- Each task writes `manifest.json` so the Web/VSCode workbench can show local downloaded files after upload failures or backend restarts
+- If upload fails after download, use the workbench's local file list to retry uploading the saved file without downloading again
 - EPUB is converted to Markdown first; `.md`, `.markdown`, and `.txt` files are counted directly
 - Files exceeding 350,000 words are split into stable part files like `book-slug_part_001_of_008.md`
 - Each part is uploaded to the same NotebookLM notebook with titles like `Book Slug - Part 001/008`

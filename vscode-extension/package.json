@@ -1,0 +1,49 @@
+{
+  "name": "zlibrary-to-notebooklm-vscode",
+  "displayName": "Z-Library to NotebookLM",
+  "description": "Open the Z-Library to NotebookLM workbench inside VSCode.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:zlibraryToNotebooklm.openWorkbench",
+    "onCommand:zlibraryToNotebooklm.restartBackend",
+    "onCommand:zlibraryToNotebooklm.stopBackend"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "zlibraryToNotebooklm.openWorkbench",
+        "title": "Z-Library to NotebookLM: Open Workbench"
+      },
+      {
+        "command": "zlibraryToNotebooklm.restartBackend",
+        "title": "Z-Library to NotebookLM: Restart Backend"
+      },
+      {
+        "command": "zlibraryToNotebooklm.stopBackend",
+        "title": "Z-Library to NotebookLM: Stop Backend"
+      }
+    ],
+    "configuration": {
+      "title": "Z-Library to NotebookLM",
+      "properties": {
+        "zlibraryToNotebooklm.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Python executable used to run scripts/web_api.py. Leave empty to use PYTHON or python3."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

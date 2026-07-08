@@ -249,13 +249,24 @@ command not found: notebooklm
    find /tmp/zlibrary-to-notebooklm/tasks -type f -path '*/downloads/*' 2>/dev/null | tail -20
    ```
 
-3. 手动上传测试：
+3. 在 Web/VSCode 工作台重试本地文件：
+
+   - 打开工作台的“本地文件”区域
+   - 找到状态为 `failed` 或已下载的文件
+   - 选择 NotebookLM 知识库
+   - 点击“重试”或“上传”
+
+   这会调用 `/api/upload-local`，不会重新下载 Z-Library 文件。
+
+4. 手动上传测试：
 
    ```bash
    notebooklm source add "文件路径" --notebook "<notebook-id>"
    ```
 
-4. 对 EPUB，优先使用脚本转换成 Markdown。EPUB 转出的 Markdown，以及已有 `.md`、`.markdown`、`.txt` 超过约 350k 词时，脚本会自动分块上传。
+   如果 NotebookLM CLI 提示 `Path is a symlink`，请确认正在运行最新代码。项目会在调用 CLI 前把 `/var`、`/tmp` 这类 macOS symlink 路径解析为真实路径。
+
+5. 对 EPUB，优先使用脚本转换成 Markdown。EPUB 转出的 Markdown，以及已有 `.md`、`.markdown`、`.txt` 超过约 350k 词时，脚本会自动分块上传。
 
 ### 问题：大文件上传不稳定
 
@@ -423,6 +434,12 @@ python3 scripts/login.py
 
 ```bash
 find /tmp/zlibrary-to-notebooklm/tasks -type f -path '*/downloads/*' 2>/dev/null | tail -20
+```
+
+查看任务 manifest：
+
+```bash
+find /tmp/zlibrary-to-notebooklm/tasks -name manifest.json 2>/dev/null | tail -20
 ```
 
 ### 问题：Markdown 或分块文件找不到

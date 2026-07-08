@@ -10,6 +10,7 @@ from scripts.web_api import (
     BadRequest,
     cancel_notebooklm_login,
     choose_chromium_launch_options,
+    create_local_upload_task,
     create_task,
     format_zlibrary_login_error,
     get_auth_status,
@@ -17,13 +18,20 @@ from scripts.web_api import (
     get_zlibrary_auth_status,
     parse_created_notebook,
     parse_notebooks,
+    parse_server_args,
     parse_search_limit,
     read_json_body,
     resolve_notebooklm_command,
+    resolve_safe_local_file,
     resolve_static_file,
+    run_local_upload_task,
+    run_upload_task,
     run_notebooklm,
+    save_task_manifest,
+    scan_local_assets,
     serialize_task,
     start_notebooklm_login,
+    task_manifest_path,
 )
 
 
@@ -83,6 +91,18 @@ class WebApiTest(unittest.TestCase):
         with self.assertRaises(BadRequest):
             parse_search_limit({"limit": ["0"]})
 
+    def test_parse_server_args_defaults_to_local_workbench_port(self):
+        args = parse_server_args([])
+
+        self.assertEqual(args.host, "127.0.0.1")
+        self.assertEqual(args.port, 7860)
+
+    def test_parse_server_args_accepts_host_and_port_for_extension(self):
+        args = parse_server_args(["--host", "127.0.0.1", "--port", "51234"])
+
+        self.assertEqual(args.host, "127.0.0.1")
+        self.assertEqual(args.port, 51234)
+
     def test_create_task_defaults_to_queued_status(self):
         task = create_task("https://zh.zlib.li/book/example", notebook_title="OS Notes")
 
@@ -98,6 +118,143 @@ class WebApiTest(unittest.TestCase):
 
         self.assertEqual(data["status"], "completed")
         self.assertEqual(data["result"]["source_ids"], ["src1"])
+
+    def test_task_manifest_path_uses_task_workspace(self):
+        path = task_manifest_path("task/42", workspace_root=Path("/tmp/tasks"))
+
+        self.assertEqual(path, Path("/tmp/tasks/task-42/manifest.json"))
+
+    def test_scan_local_assets_reads_manifest_and_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            task_dir = root / "task-1"
+            downloads = task_dir / "downloads"
+            downloads.mkdir(parents=True)
+            downloaded = downloads / "book.pdf"
+            downloaded.write_bytes(b"pdf")
+            manifest = {
+                "id": "task-1",
+                "mode": "remote",
+                "zlibrary_url": "https://zh.zlib.li/book/example",
+                "notebook_id": "nb123",
+                "status": "failed",
+                "stage": "upload",
+                "downloaded_file": str(downloaded),
+                "final_file": str(downloaded),
+                "file_format": "pdf",
+                "error": "NotebookLM timeout",
+                "result": {"success": False},
+                "updated_at": 123.0,
+            }
+            (task_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+            assets = scan_local_assets(root)
+
+        self.assertEqual(len(assets), 1)
+        asset = assets[0]
+        self.assertEqual(asset["task_id"], "task-1")
+        self.assertEqual(asset["filename"], "book.pdf")
+        self.assertEqual(asset["extension"], "pdf")
+        self.assertEqual(asset["size"], 3)
+        self.assertEqual(asset["status"], "failed")
+        self.assertEqual(asset["stage"], "upload")
+        self.assertEqual(asset["error"], "NotebookLM timeout")
+        self.assertEqual(asset["notebook_id"], "nb123")
+        self.assertEqual(asset["local_path"], str(downloaded.resolve()))
+
+    def test_resolve_safe_local_file_rejects_paths_outside_workspace(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            task_dir = root / "task-1" / "downloads"
+            task_dir.mkdir(parents=True)
+            local_file = task_dir / "book.pdf"
+            local_file.write_text("pdf", encoding="utf-8")
+            sibling = root.parent / "book.pdf"
+
+            self.assertEqual(resolve_safe_local_file(str(local_file), root), local_file.resolve())
+            with self.assertRaises(BadRequest):
+                resolve_safe_local_file(str(sibling), root)
+
+    def test_create_local_upload_task_records_local_path_and_mode(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            local_file = root / "task-1" / "downloads" / "book.pdf"
+            local_file.parent.mkdir(parents=True)
+            local_file.write_text("pdf", encoding="utf-8")
+
+            task = create_local_upload_task(str(local_file), notebook_id="nb123", notebook_title=None, workspace_root=root)
+
+        self.assertEqual(task.mode, "local")
+        self.assertEqual(task.local_path, str(local_file.resolve()))
+        self.assertEqual(task.notebook_id, "nb123")
+        self.assertIn("本地文件上传任务已创建", task.logs[0])
+
+    def test_run_upload_task_keeps_downloaded_file_when_upload_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            downloaded = root / "task-1" / "downloads" / "book.pdf"
+            downloaded.parent.mkdir(parents=True)
+            downloaded.write_text("pdf", encoding="utf-8")
+            task = create_task("https://zh.zlib.li/book/example", notebook_id="nb123")
+            task.id = "task-1"
+            task.workspace_root = root
+            upload_calls = []
+
+            class FakeUploader:
+                def __init__(self, *_args, **_kwargs):
+                    pass
+
+                async def download_from_zlibrary(self, _url):
+                    return downloaded, "pdf"
+
+                def convert_to_txt(self, file_path, file_format):
+                    return file_path
+
+                def upload_to_notebooklm(self, _file_path, notebook_id=None):
+                    upload_calls.append(notebook_id)
+                    return {"success": False, "error": "NotebookLM CLI timeout"}
+
+            with patch("scripts.web_api.ZLibraryAutoUploader", FakeUploader):
+                run_upload_task(task)
+
+            manifest = json.loads((root / "task-1" / "manifest.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(task.status, "failed")
+        self.assertEqual(task.error, "NotebookLM CLI timeout")
+        self.assertEqual(task.downloaded_file, str(downloaded))
+        self.assertEqual(task.final_file, str(downloaded))
+        self.assertEqual(upload_calls, ["nb123"])
+        self.assertEqual(manifest["downloaded_file"], str(downloaded))
+        self.assertEqual(manifest["error"], "NotebookLM CLI timeout")
+
+    def test_run_local_upload_task_uploads_without_downloading(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            local_file = root / "task-1" / "downloads" / "book.pdf"
+            local_file.parent.mkdir(parents=True)
+            local_file.write_text("pdf", encoding="utf-8")
+            task = create_local_upload_task(str(local_file), notebook_id="nb123", notebook_title=None, workspace_root=root)
+
+            class FakeUploader:
+                def __init__(self, *_args, **_kwargs):
+                    pass
+
+                def convert_to_txt(self, file_path, file_format=None):
+                    return file_path
+
+                def upload_to_notebooklm(self, file_path, notebook_id=None):
+                    return {"success": True, "source_id": "src123", "notebook_id": notebook_id, "title": Path(file_path).stem}
+
+            with patch("scripts.web_api.ZLibraryAutoUploader", FakeUploader):
+                run_local_upload_task(task)
+
+            manifest = json.loads(task_manifest_path(task.id, root).read_text(encoding="utf-8"))
+
+        self.assertEqual(task.status, "completed")
+        self.assertEqual(task.stage, "uploaded")
+        self.assertEqual(task.result["source_id"], "src123")
+        self.assertEqual(manifest["status"], "completed")
+        self.assertEqual(manifest["result"]["source_id"], "src123")
 
     def test_resolve_static_file_rejects_sibling_path_prefix_escape(self):
         with tempfile.TemporaryDirectory() as temp_dir:
