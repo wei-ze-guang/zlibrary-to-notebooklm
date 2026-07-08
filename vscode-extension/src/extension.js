@@ -1,4 +1,5 @@
 const childProcess = require("node:child_process");
+const path = require("node:path");
 const vscode = require("vscode");
 
 const {
@@ -100,6 +101,7 @@ async function renderWorkbench(context, forceRestart = false) {
     workbenchPanel.onDidDispose(() => {
       workbenchPanel = null;
     });
+    workbenchPanel.iconPath = vscode.Uri.file(path.join(context.extensionPath, "media", "icon.png"));
     workbenchPanel.webview.onDidReceiveMessage(async (message) => {
       if (message?.type === "openExternal") {
         await vscode.env.openExternal(vscode.Uri.parse(backendUrl));
@@ -136,8 +138,26 @@ async function restartBackend(context) {
   }
 }
 
+function createWorkbenchTreeProvider(context) {
+  return {
+    getTreeItem(element) {
+      return element;
+    },
+    getChildren() {
+      const item = new vscode.TreeItem("打开工作台", vscode.TreeItemCollapsibleState.None);
+      item.command = {
+        command: "zlibraryToNotebooklm.openWorkbench",
+        title: "Open Workbench",
+      };
+      item.iconPath = vscode.Uri.file(path.join(context.extensionPath, "resources", "activity-icon.svg"));
+      return [item];
+    },
+  };
+}
+
 function activate(context) {
   context.subscriptions.push(
+    vscode.window.registerTreeDataProvider("zlibraryToNotebooklm.openWorkbenchView", createWorkbenchTreeProvider(context)),
     vscode.commands.registerCommand("zlibraryToNotebooklm.openWorkbench", () => openWorkbench(context)),
     vscode.commands.registerCommand("zlibraryToNotebooklm.restartBackend", () => restartBackend(context)),
     vscode.commands.registerCommand("zlibraryToNotebooklm.stopBackend", async () => {

@@ -57,8 +57,11 @@ Thumbs.db
 
 # Logs
 *.log
+*.vsix
+vscode-extension/bundled/
 
 # Temporary files
 *.tmp
 *.temp
 /tmp/
+vscode-extension/node_modules

@@ -31,6 +31,51 @@ This extension opens the existing Z-Library to NotebookLM workbench inside VSCod
 
 If the extension uses the wrong Python, set `zlibraryToNotebooklm.pythonPath` to the Python executable that has this project's dependencies installed.
 
+## Package And Install Locally
+
+Install package dependencies once:
+
+```bash
+cd vscode-extension
+pnpm install
+```
+
+Build a VSIX only:
+
+```bash
+pnpm package
+```
+
+Build the latest Web UI, copy the Python backend and `web/dist` into the VSIX runtime bundle, package the extension, and install into local VSCode, replacing any existing installation:
+
+```bash
+pnpm install:local
+```
+
+If you only changed the extension shell and want to skip rebuilding `web/dist`:
+
+```bash
+pnpm install:local -- --skip-web-build
+```
+
+Even when `--skip-web-build` is used, the installer still copies the current `scripts/`, `requirements.txt`, and existing `web/dist` into `vscode-extension/bundled/` before packaging. The installed extension starts `bundled/scripts/web_api.py`, so it does not depend on the original repository path after installation.
+
+The install script uses `code --install-extension <vsix> --force`, so the existing local extension is overwritten by default. On macOS it prefers the official VSCode CLI at:
+
+```text
+/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code
+```
+
+It rejects Cursor and VSCodium/Codium CLIs to avoid installing into the wrong editor. If your VSCode CLI is somewhere else, pass it explicitly:
+
+```bash
+pnpm install:local -- --code "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+```
+
+After installation, reload VSCode with `Developer: Reload Window`.
+
+The PNG icon appears in the Extensions view. The extension also contributes a left Activity Bar entry named `NotebookLM`; click it and then click `打开工作台` to open the Webview. VSCode may cache extension icons, so if the icon does not refresh immediately, run `Developer: Reload Window` or fully quit and reopen VSCode.
+
 ## Tests
 
 ```bash

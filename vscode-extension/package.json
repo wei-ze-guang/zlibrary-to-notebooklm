@@ -11,6 +11,7 @@
   "categories": [
     "Other"
   ],
+  "icon": "media/icon.png",
   "activationEvents": [
     "onCommand:zlibraryToNotebooklm.openWorkbench",
     "onCommand:zlibraryToNotebooklm.restartBackend",
@@ -32,6 +33,23 @@
         "title": "Z-Library to NotebookLM: Stop Backend"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "zlibraryToNotebooklm",
+          "title": "NotebookLM",
+          "icon": "resources/activity-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "zlibraryToNotebooklm": [
+        {
+          "id": "zlibraryToNotebooklm.openWorkbenchView",
+          "name": "Workbench"
+        }
+      ]
+    },
     "configuration": {
       "title": "Z-Library to NotebookLM",
       "properties": {
@@ -44,6 +62,11 @@
     }
   },
   "scripts": {
+    "package": "node scripts/install-local.js --package-only",
+    "install:local": "node scripts/install-local.js",
     "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.9.2"
   }
 }

@@ -7,6 +7,10 @@ const path = require("node:path");
 const DEFAULT_HOST = "127.0.0.1";
 
 function getProjectRoot(extensionPath) {
+  const bundledRoot = path.join(extensionPath, "bundled");
+  if (fs.existsSync(path.join(bundledRoot, "scripts", "web_api.py"))) {
+    return bundledRoot;
+  }
   return path.basename(extensionPath) === "vscode-extension"
     ? path.dirname(extensionPath)
     : extensionPath;

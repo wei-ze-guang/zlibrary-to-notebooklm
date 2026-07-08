@@ -20,6 +20,15 @@ test("getProjectRoot resolves the repository root from the extension folder", ()
   assert.equal(getProjectRoot(extensionPath), "/repo");
 });
 
+test("getProjectRoot uses bundled runtime when installed from VSIX", () => {
+  const extensionPath = fs.mkdtempSync(path.join(os.tmpdir(), "zlnm-extension-"));
+  const backend = path.join(extensionPath, "bundled", "scripts", "web_api.py");
+  fs.mkdirSync(path.dirname(backend), { recursive: true });
+  fs.writeFileSync(backend, "");
+
+  assert.equal(getProjectRoot(extensionPath), path.join(extensionPath, "bundled"));
+});
+
 test("buildBackendArgs points at web_api.py with host and port", () => {
   const args = buildBackendArgs("/repo", "127.0.0.1", 51234);
 
