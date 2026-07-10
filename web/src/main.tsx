@@ -7,6 +7,7 @@ import {
   Database,
   Download,
   Eye,
+  FolderDown,
   PanelRightClose,
   PanelRightOpen,
   Loader2,
@@ -188,6 +189,35 @@ type BrowserStatus = {
 
 const BACKEND_UNAVAILABLE = "后端服务未启动：请运行 python3 scripts/web_api.py，或打开 http://127.0.0.1:7860";
 const SEARCH_RESULT_LIMIT = 50;
+const WORKSPACE_DOWNLOAD_FOLDER = "zlibrary-downloads";
+
+type WorkspaceOption = {
+  label: string;
+  path: string;
+};
+
+function parseVscodeWorkbenchContext(search = window.location.search): { vscodeMode: boolean; workspaces: WorkspaceOption[] } {
+  const params = new URLSearchParams(search);
+  const vscodeMode = params.get("vscode") === "1";
+  const raw = params.get("workspaces");
+  if (!raw) return { vscodeMode, workspaces: [] };
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return { vscodeMode, workspaces: [] };
+    const workspaces = parsed
+      .map((item): WorkspaceOption | null => {
+        const label = typeof item?.label === "string" ? item.label.trim() : "";
+        const path = typeof item?.path === "string" ? item.path.trim() : "";
+        if (!path) return null;
+        return { label: label || path, path };
+      })
+      .filter((item): item is WorkspaceOption => Boolean(item));
+    return { vscodeMode, workspaces };
+  } catch {
+    return { vscodeMode, workspaces: [] };
+  }
+}
 
 type ResultChip = {
   label: string;
@@ -383,6 +413,14 @@ function progressPercent(task?: UploadTask | null): number {
   return task ? 8 : 0;
 }
 
+function taskProgressDetail(task: UploadTask): string {
+  const savedFile = task.result?.workspace_saved_file;
+  if (typeof savedFile === "string" && savedFile.trim()) {
+    return `已保存：${savedFile}`;
+  }
+  return task.progress?.detail || task.logs?.[task.logs.length - 1] || "等待任务更新";
+}
+
 function taskFailureKind(task?: UploadTask | null): "download" | "upload" | "process" | "task" {
   const label = `${task?.progress?.label || ""} ${task?.stage || ""} ${task?.error || ""}`;
   if (/下载|download/i.test(label)) return "download";
@@ -397,7 +435,8 @@ function taskResultChips(task: UploadTask | null, selectedAction: string): Resul
     return [{ label: "任务", value: taskFailureKind(task) === "download" ? "下载失败" : "失败", tone: "danger" }];
   }
   if (task.status === "running" || task.status === "queued") {
-    return [{ label: "任务", value: selectedAction === "upload" ? "上传中" : "下载中", tone: "warning" }];
+    const value = selectedAction === "upload" ? "上传中" : selectedAction === "workspace-download" ? "存工作区" : "下载中";
+    return [{ label: "任务", value, tone: "warning" }];
   }
   return [];
 }
@@ -520,6 +559,7 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 function App() {
+  const vscodeContext = useMemo(() => parseVscodeWorkbenchContext(), []);
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [browser, setBrowser] = useState<BrowserStatus | null>(null);
   const [query, setQuery] = useState("操作系统");
@@ -528,7 +568,8 @@ function App() {
   const [selectedNotebookId, setSelectedNotebookId] = useState("");
   const [newNotebookTitle, setNewNotebookTitle] = useState("");
   const [selectedBook, setSelectedBook] = useState<SearchResult | null>(null);
-  const [selectedAction, setSelectedAction] = useState<"view" | "download" | "upload" | "local">("view");
+  const [selectedAction, setSelectedAction] = useState<"view" | "download" | "workspace-download" | "upload" | "local">("view");
+  const [selectedWorkspaceRoot, setSelectedWorkspaceRoot] = useState(vscodeContext.workspaces[0]?.path || "");
   const [task, setTask] = useState<UploadTask | null>(null);
   const [localAssets, setLocalAssets] = useState<LocalAsset[]>([]);
   const [assetDetail, setAssetDetail] = useState<LocalAsset | null>(null);
@@ -549,6 +590,7 @@ function App() {
   const notebooklmLoginRunning = auth?.notebooklm.status === "login_running";
   const zlibraryCardState = zlibraryLoginActive ? "pending" : zlibraryFailed ? "problem" : zlibraryReady ? "ready" : "problem";
   const browserState = browserCardState(browser?.status);
+  const vscodeWorkspaceReady = Boolean(vscodeContext.vscodeMode && selectedWorkspaceRoot);
 
   const canUpload = useMemo(() => {
     return Boolean(zlibraryReady && notebooklmReady && selectedBook && (selectedNotebookId || newNotebookTitle.trim()));
@@ -588,9 +630,16 @@ function App() {
     }
     if (selectedTaskForBook?.status === "running" || selectedTaskForBook?.status === "queued") {
       return {
-        label: selectedAction === "upload" ? "下载并上传中" : "正在下载",
+        label: selectedAction === "upload" ? "下载并上传中" : selectedAction === "workspace-download" ? "正在保存到工作区" : "正在下载",
         title: selectedBook.title,
         detail: selectedTaskForBook.progress?.label || statusText(selectedTaskForBook.status, selectedTaskForBook.stage),
+      };
+    }
+    if (selectedAction === "workspace-download") {
+      return {
+        label: "保存到工作区",
+        title: selectedBook.title,
+        detail: selectedWorkspaceRoot ? `原文件会保存到 ${WORKSPACE_DOWNLOAD_FOLDER}` : "当前 VSCode 没有可用工作区。",
       };
     }
     if (selectedAction === "download") {
@@ -817,6 +866,39 @@ function App() {
       await reconcileTaskUpdate(data, { announceFailure: false });
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "下载启动失败");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function downloadBookToWorkspace(book: SearchResult) {
+    if (!zlibraryReady) {
+      setMessage("请先完成 Z-Library 登录");
+      return;
+    }
+    if (!selectedWorkspaceRoot) {
+      setMessage("当前 VSCode 没有可用工作区，无法保存到工作区");
+      return;
+    }
+
+    const busyKey = `workspace-download:${book.url}`;
+    setBusy(busyKey);
+    setMessage("");
+    try {
+      const data = await api<UploadTask>("/api/download", {
+        method: "POST",
+        body: JSON.stringify({
+          zlibrary_url: book.url,
+          target: "vscode_workspace",
+          workspace_root: selectedWorkspaceRoot,
+          folder_name: WORKSPACE_DOWNLOAD_FOLDER,
+        }),
+      });
+      setSelectedBook(book);
+      setSelectedAction("workspace-download");
+      await reconcileTaskUpdate(data, { announceFailure: false });
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "保存到 VSCode 工作区失败");
     } finally {
       setBusy("");
     }
@@ -1160,6 +1242,20 @@ function App() {
               搜索
             </button>
           </form>
+          {vscodeContext.vscodeMode && vscodeContext.workspaces.length > 0 && (
+            <div className="workspace-target">
+              <FolderDown size={15} />
+              <span>工作区下载</span>
+              <select value={selectedWorkspaceRoot} onChange={(event) => setSelectedWorkspaceRoot(event.target.value)}>
+                {vscodeContext.workspaces.map((workspace) => (
+                  <option key={workspace.path} value={workspace.path}>
+                    {workspace.label}
+                  </option>
+                ))}
+              </select>
+              <small>{WORKSPACE_DOWNLOAD_FOLDER}</small>
+            </div>
+          )}
           <div className="results-summary">
             {busy === "search" ? "正在搜索..." : results.length ? `显示 ${results.length} 条结果` : " "}
           </div>
@@ -1209,6 +1305,17 @@ function App() {
                         {busy === `download:${book.url}` ? <Loader2 className="spin" size={14} /> : <Download size={14} />}
                         {localMatch ? "再下载" : "下载"}
                       </button>
+                      {vscodeWorkspaceReady && (
+                        <button
+                          className="mini-button ghost"
+                          onClick={() => downloadBookToWorkspace(book)}
+                          disabled={!zlibraryReady || busy === `workspace-download:${book.url}`}
+                          title={`保存原始下载文件到当前 VSCode 工作区的 ${WORKSPACE_DOWNLOAD_FOLDER} 目录，不分片、不上传`}
+                        >
+                          {busy === `workspace-download:${book.url}` ? <Loader2 className="spin" size={14} /> : <FolderDown size={14} />}
+                          到工作区
+                        </button>
+                      )}
                       {localMatch && (
                         <button
                           className="mini-button ghost"
@@ -1301,15 +1408,30 @@ function App() {
               <div className="task-progress-track" aria-label="任务进度">
                 <div style={{ width: `${progressPercent(task)}%` }} />
               </div>
-              <small>{task.progress?.detail || task.logs?.[task.logs.length - 1] || "等待任务更新"}</small>
+              <small title={taskProgressDetail(task)}>{taskProgressDetail(task)}</small>
               {task.status === "failed" && (
                 <div className="task-recovery">
                   <strong>{task.error || "任务失败"}</strong>
                   <div className="task-recovery-actions">
                     {selectedBook && taskFailureKind(task) === "download" && (
-                      <button className="mini-button" onClick={() => downloadBook(selectedBook)} disabled={!zlibraryReady || busy === `download:${selectedBook.url}`}>
-                        {busy === `download:${selectedBook.url}` ? <Loader2 className="spin" size={14} /> : <Download size={14} />}
-                        重试下载
+                      <button
+                        className="mini-button"
+                        onClick={() => {
+                          if (selectedAction === "workspace-download") {
+                            downloadBookToWorkspace(selectedBook);
+                          } else {
+                            downloadBook(selectedBook);
+                          }
+                        }}
+                        disabled={
+                          !zlibraryReady
+                          || busy === `download:${selectedBook.url}`
+                          || busy === `workspace-download:${selectedBook.url}`
+                          || (selectedAction === "workspace-download" && !selectedWorkspaceRoot)
+                        }
+                      >
+                        {busy === `download:${selectedBook.url}` || busy === `workspace-download:${selectedBook.url}` ? <Loader2 className="spin" size={14} /> : selectedAction === "workspace-download" ? <FolderDown size={14} /> : <Download size={14} />}
+                        {selectedAction === "workspace-download" ? "重试保存" : "重试下载"}
                       </button>
                     )}
                     {taskFailureKind(task) === "download" && (

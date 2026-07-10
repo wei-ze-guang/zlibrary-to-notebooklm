@@ -91,6 +91,15 @@ function buildWorkbenchUrl(host, port) {
   return `http://${host}:${port}`;
 }
 
+function buildWorkbenchFrameUrl(url, workspaces = []) {
+  const target = new URL("/", url);
+  if (Array.isArray(workspaces) && workspaces.length) {
+    target.searchParams.set("vscode", "1");
+    target.searchParams.set("workspaces", JSON.stringify(workspaces));
+  }
+  return target.toString();
+}
+
 function allocatePort(host = DEFAULT_HOST) {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -173,7 +182,8 @@ function createNonce() {
   return text;
 }
 
-function renderWorkbenchHtml(url, nonce) {
+function renderWorkbenchHtml(url, nonce, workspaces = []) {
+  const frameUrl = buildWorkbenchFrameUrl(url, workspaces);
   return `<!doctype html>
 <html lang="zh-CN">
   <head>
@@ -246,7 +256,7 @@ function renderWorkbenchHtml(url, nonce) {
         <button id="restart">重启后端</button>
       </div>
     </div>
-    <iframe id="workbench" src="${url}" title="Z-Library to NotebookLM Workbench"></iframe>
+    <iframe id="workbench" src="${frameUrl}" title="Z-Library to NotebookLM Workbench"></iframe>
     <script nonce="${nonce}">
       const vscode = acquireVsCodeApi();
       document.getElementById("reload").addEventListener("click", () => {
@@ -268,6 +278,7 @@ module.exports = {
   allocatePort,
   buildBackendEnv,
   buildBackendArgs,
+  buildWorkbenchFrameUrl,
   buildWorkbenchUrl,
   closeBackendGracefully,
   createNonce,

@@ -342,6 +342,8 @@ class UploadTask:
     uploads: list[dict[str, Any]] = field(default_factory=list)
     result: dict[str, Any] | None = None
     error: str | None = None
+    target_workspace_root: str | None = None
+    target_folder_name: str | None = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     workspace_root: Path = WORKSPACE_ROOT
@@ -525,6 +527,45 @@ def task_manifest_path(task_id: str, workspace_root: Path = WORKSPACE_ROOT) -> P
     return workspace_root / safe_task_id(task_id) / "manifest.json"
 
 
+def resolve_workspace_download_folder(workspace_root: str | Path, folder_name: str | None = None) -> Path:
+    root = Path(workspace_root).expanduser()
+    if not root.exists() or not root.is_dir():
+        raise BadRequest("VSCode 工作区不存在或不是目录")
+
+    raw_name = str(folder_name or "zlibrary-downloads").strip() or "zlibrary-downloads"
+    folder_path = Path(raw_name)
+    if folder_path.is_absolute():
+        raise BadRequest("下载目录不能是绝对路径")
+    if any(part in ("..", "") for part in folder_path.parts):
+        raise BadRequest("下载目录不能包含 .. 或空路径片段")
+
+    resolved_root = root.resolve()
+    resolved_folder = (resolved_root / folder_path).resolve()
+    try:
+        resolved_folder.relative_to(resolved_root)
+    except ValueError as exc:
+        raise BadRequest("下载目录必须位于当前 VSCode 工作区内") from exc
+
+    if resolved_folder.exists() and not resolved_folder.is_dir():
+        raise BadRequest("下载目录已存在但不是文件夹")
+    resolved_folder.mkdir(parents=True, exist_ok=True)
+    return resolved_folder
+
+
+def resolve_unique_workspace_file(folder: Path, filename: str) -> Path:
+    safe_name = Path(filename).name.strip() or f"download-{uuid.uuid4().hex}"
+    candidate = folder / safe_name
+    if not candidate.exists():
+        return candidate
+    stem = candidate.stem
+    suffix = candidate.suffix
+    for index in range(1, 1000):
+        next_candidate = folder / f"{stem} ({index}){suffix}"
+        if not next_candidate.exists():
+            return next_candidate
+    return folder / f"{stem}-{uuid.uuid4().hex}{suffix}"
+
+
 def serialize_task(task: UploadTask) -> dict[str, Any]:
     return {
         "id": task.id,
@@ -548,6 +589,8 @@ def serialize_task(task: UploadTask) -> dict[str, Any]:
         "uploads": task.uploads,
         "result": task.result,
         "error": task.error,
+        "target_workspace_root": task.target_workspace_root,
+        "target_folder_name": task.target_folder_name,
         "created_at": task.created_at,
         "updated_at": task.updated_at,
     }
@@ -1057,6 +1100,8 @@ def task_from_manifest(manifest: dict[str, Any], workspace_root: Path = WORKSPAC
         uploads=list(manifest.get("uploads") or []),
         result=manifest.get("result") if isinstance(manifest.get("result"), dict) else None,
         error=manifest.get("error"),
+        target_workspace_root=manifest.get("target_workspace_root"),
+        target_folder_name=manifest.get("target_folder_name"),
         created_at=float(manifest.get("created_at") or time.time()),
         updated_at=float(manifest.get("updated_at") or time.time()),
         workspace_root=workspace_root,
@@ -1106,12 +1151,22 @@ def create_task(zlibrary_url: str, notebook_id: str | None = None, notebook_titl
     return task
 
 
-def create_download_task(zlibrary_url: str, workspace_root: Path = WORKSPACE_ROOT) -> UploadTask:
+def create_download_task(
+    zlibrary_url: str,
+    workspace_root: Path = WORKSPACE_ROOT,
+    target_workspace_root: str | Path | None = None,
+    target_folder_name: str | None = None,
+) -> UploadTask:
+    target_root = str(Path(target_workspace_root).expanduser().resolve()) if target_workspace_root else None
+    if target_root:
+        resolve_workspace_download_folder(target_root, target_folder_name)
     task = UploadTask(
         id=uuid.uuid4().hex,
         zlibrary_url=zlibrary_url,
         mode="download",
         logs=["下载到本地任务已创建"],
+        target_workspace_root=target_root,
+        target_folder_name=target_folder_name or ("zlibrary-downloads" if target_root else None),
         workspace_root=workspace_root,
     )
     with TASKS_LOCK:
@@ -1682,15 +1737,30 @@ def run_download_task(task: UploadTask) -> None:
             downloaded_file, file_format = downloaded
             if not downloaded_file:
                 raise RuntimeError("下载失败，未找到文件")
-            task.downloaded_file = str(downloaded_file)
-            task.final_file = str(downloaded_file)
+            source_file = Path(downloaded_file)
+            task.downloaded_file = str(source_file)
+            task.final_file = str(source_file)
             task.file_format = file_format
-            set_task_progress(task, "downloaded", 90, "保存完成", Path(downloaded_file).name)
+            if task.target_workspace_root:
+                target_folder = resolve_workspace_download_folder(task.target_workspace_root, task.target_folder_name)
+                target_file = resolve_unique_workspace_file(target_folder, source_file.name)
+                if source_file.resolve() != target_file.resolve():
+                    shutil.copy2(source_file, target_file)
+                task.final_file = str(target_file.resolve())
+                task.result = {
+                    "workspace_root": str(Path(task.target_workspace_root).resolve()),
+                    "workspace_folder": str(target_folder.resolve()),
+                    "workspace_saved_file": str(target_file.resolve()),
+                    "filename": target_file.name,
+                    "size": target_file.stat().st_size,
+                }
+            set_task_progress(task, "downloaded", 90, "保存完成", Path(task.final_file).name)
             save_task_manifest(task)
 
-        set_task_progress(task, "downloaded", 100, "下载完成", "已保存到本地文件列表")
+        done_detail = "已保存到 VSCode 工作区" if task.target_workspace_root else "已保存到本地文件列表"
+        set_task_progress(task, "downloaded", 100, "下载完成", done_detail)
         task.status = "completed"
-        task.logs.append("下载完成，已保存到本地")
+        task.logs.append(done_detail)
         save_task_manifest(task)
     except Exception as exc:
         fail_task(task, exc, "下载失败")
@@ -2134,10 +2204,23 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/download":
                 body = read_json_body(self)
                 zlibrary_url = str(body.get("zlibrary_url", "")).strip()
+                target = str(body.get("target", "")).strip()
+                workspace_root = str(body.get("workspace_root", "")).strip()
+                folder_name = str(body.get("folder_name", "")).strip() or None
                 if not zlibrary_url:
                     json_response(self, 400, {"error": "Z-Library 链接不能为空"})
                     return
-                task = create_download_task(zlibrary_url)
+                if target and target != "vscode_workspace":
+                    json_response(self, 400, {"error": "未知下载目标"})
+                    return
+                if target == "vscode_workspace" and not workspace_root:
+                    json_response(self, 400, {"error": "VSCode 工作区不能为空"})
+                    return
+                task = create_download_task(
+                    zlibrary_url,
+                    target_workspace_root=workspace_root if target == "vscode_workspace" else None,
+                    target_folder_name=folder_name,
+                )
                 start_download_task(task)
                 json_response(self, 202, serialize_task(task))
                 return

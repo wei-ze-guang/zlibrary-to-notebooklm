@@ -185,6 +185,8 @@ pnpm test
 
 在 VSCode 命令面板执行 `Z-Library to NotebookLM: Open Workbench`。如果 VSCode 使用了错误的 Python 环境，可把 `zlibraryToNotebooklm.pythonPath` 设置为已安装本项目依赖的 Python 可执行文件。
 
+从 VSCode 打开时，搜索面板还可以把原始下载文件直接保存到当前工作区的 `zlibrary-downloads/` 目录。这个“下载到工作区”动作不会分片、不会上传，也不会覆盖已有同名文件。
+
 ### 批量处理
 
 ```bash
@@ -326,6 +328,7 @@ python3 scripts/web_api.py
 - `POST /api/notebooks`，请求体为 `{"title":"知识库名称"}`
 - `POST /api/upload`，请求体为 `{"zlibrary_url":"...","notebook_id":"..."}` 或 `{"zlibrary_url":"...","notebook_title":"..."}`
 - `POST /api/download`，请求体为 `{"zlibrary_url":"..."}`，只下载到本地任务工作区，不上传
+- `POST /api/download`，请求体为 `{"zlibrary_url":"...","target":"vscode_workspace","workspace_root":"/path/to/workspace","folder_name":"zlibrary-downloads"}`，把原始文件保存到 VSCode 工作区目录，不分片、不上传
 - `GET /api/local-files`
 - `POST /api/process-local`，请求体为 `{"task_id":"...","local_path":"...","strategy":"keep|replace|version"}`，只处理/分片本地工作区文件，不上传；已经处理过的文件必须明确选择保留、覆盖或生成新版本
 - `POST /api/upload-local`，请求体为 `{"task_id":"...","local_path":"...","notebook_id":"..."}` 或 `{"task_id":"...","local_path":"...","notebook_title":"..."}`

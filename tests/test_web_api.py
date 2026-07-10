@@ -32,6 +32,8 @@ from scripts.web_api import (
     read_json_body,
     resolve_notebooklm_command,
     resolve_safe_local_file,
+    resolve_unique_workspace_file,
+    resolve_workspace_download_folder,
     resolve_static_file,
     run_download_task,
     run_local_upload_task,
@@ -642,6 +644,81 @@ class WebApiTest(unittest.TestCase):
         self.assertEqual(task.progress["label"], "下载失败")
         self.assertIn("下载失败", task.progress["detail"])
         self.assertEqual(manifest["progress"]["phase"], "failed")
+
+    def test_resolve_workspace_download_folder_creates_safe_project_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            folder = resolve_workspace_download_folder(root, "zlibrary-downloads")
+
+            self.assertEqual(folder, (root / "zlibrary-downloads").resolve())
+            self.assertTrue(folder.is_dir())
+
+    def test_resolve_workspace_download_folder_rejects_unsafe_targets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "zlibrary-downloads").write_text("file collision", encoding="utf-8")
+
+            with self.assertRaisesRegex(BadRequest, "不是文件夹"):
+                resolve_workspace_download_folder(root, "zlibrary-downloads")
+
+            with self.assertRaisesRegex(BadRequest, "不能包含"):
+                resolve_workspace_download_folder(root, "../outside")
+
+            with self.assertRaisesRegex(BadRequest, "不能是绝对路径"):
+                resolve_workspace_download_folder(root, str(root / "absolute"))
+
+    def test_resolve_unique_workspace_file_versions_duplicate_names(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            (folder / "book.pdf").write_text("old", encoding="utf-8")
+
+            target = resolve_unique_workspace_file(folder, "book.pdf")
+
+        self.assertEqual(target.name, "book (1).pdf")
+
+    def test_run_download_task_can_save_original_file_to_vscode_workspace(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "tasks"
+            project = Path(temp_dir) / "project"
+            project.mkdir()
+            downloaded = root / "task-1" / "downloads" / "book.pdf"
+            downloaded.parent.mkdir(parents=True)
+            downloaded.write_text("pdf", encoding="utf-8")
+            task = create_download_task(
+                "https://zh.zlib.li/book/example",
+                workspace_root=root,
+                target_workspace_root=str(project),
+                target_folder_name="zlibrary-downloads",
+            )
+            task.id = "task-1"
+
+            class FakeUploader:
+                def __init__(self, *_args, **_kwargs):
+                    pass
+
+                async def download_from_zlibrary(self, _url):
+                    return downloaded, "pdf"
+
+                def convert_to_txt(self, *_args, **_kwargs):
+                    raise AssertionError("download task must not convert")
+
+                def upload_to_notebooklm(self, *_args, **_kwargs):
+                    raise AssertionError("download task must not upload")
+
+            with patch("scripts.web_api.ZLibraryAutoUploader", FakeUploader):
+                run_download_task(task)
+
+            saved = project / "zlibrary-downloads" / "book.pdf"
+            manifest = json.loads((root / "task-1" / "manifest.json").read_text(encoding="utf-8"))
+
+            self.assertTrue(saved.exists())
+            self.assertEqual(saved.read_text(encoding="utf-8"), "pdf")
+            self.assertEqual(task.status, "completed")
+            self.assertEqual(task.final_file, str(saved.resolve()))
+            self.assertEqual(task.result["workspace_saved_file"], str(saved.resolve()))
+            self.assertEqual(manifest["target_workspace_root"], str(project.resolve()))
+            self.assertEqual(manifest["result"]["workspace_folder"], str(saved.parent.resolve()))
 
     def test_run_local_upload_task_uploads_without_downloading(self):
         with tempfile.TemporaryDirectory() as temp_dir:

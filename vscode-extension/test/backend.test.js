@@ -7,6 +7,7 @@ const test = require("node:test");
 const {
   buildBackendEnv,
   buildBackendArgs,
+  buildWorkbenchFrameUrl,
   buildWorkbenchUrl,
   closeBackendGracefully,
   getProjectRoot,
@@ -84,9 +85,29 @@ test("renderWorkbenchHtml embeds the backend iframe and CSP", () => {
   const html = renderWorkbenchHtml("http://127.0.0.1:51234", "abc123");
 
   assert.match(html, /iframe/);
-  assert.match(html, /src="http:\/\/127\.0\.0\.1:51234"/);
+  assert.match(html, /src="http:\/\/127\.0\.0\.1:51234\/?"/);
   assert.match(html, /frame-src http:\/\/127\.0\.0\.1:51234/);
   assert.match(html, /nonce-abc123/);
+});
+
+test("buildWorkbenchFrameUrl passes VSCode workspace folders to the workbench", () => {
+  const url = new URL(buildWorkbenchFrameUrl("http://127.0.0.1:51234", [
+    { label: "alpha", path: "/repo/alpha" },
+  ]));
+
+  assert.equal(url.origin, "http://127.0.0.1:51234");
+  assert.equal(url.searchParams.get("vscode"), "1");
+  assert.deepEqual(JSON.parse(url.searchParams.get("workspaces")), [{ label: "alpha", path: "/repo/alpha" }]);
+});
+
+test("renderWorkbenchHtml embeds the workspace-aware frame URL", () => {
+  const html = renderWorkbenchHtml("http://127.0.0.1:51234", "abc123", [
+    { label: "alpha", path: "/repo/alpha" },
+  ]);
+
+  assert.match(html, /vscode=1/);
+  assert.match(html, /workspaces=/);
+  assert.match(html, /%2Frepo%2Falpha/);
 });
 
 test("closeBackendGracefully posts browser close before resolving", async () => {

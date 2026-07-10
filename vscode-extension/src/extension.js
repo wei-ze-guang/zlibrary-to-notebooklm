@@ -114,7 +114,7 @@ async function renderWorkbench(context, forceRestart = false) {
     workbenchPanel.reveal(vscode.ViewColumn.One);
   }
 
-  workbenchPanel.webview.html = renderWorkbenchHtml(url, createNonce());
+  workbenchPanel.webview.html = renderWorkbenchHtml(url, createNonce(), buildWorkspaceOptions(vscode.workspace.workspaceFolders || []));
 }
 
 async function openWorkbench(context) {
@@ -153,6 +153,21 @@ function createWorkbenchTreeProvider(context) {
       return [item];
     },
   };
+}
+
+function buildWorkspaceOptions(workspaceFolders = []) {
+  return workspaceFolders
+    .map((folder) => {
+      const fsPath = folder?.uri?.fsPath;
+      if (!fsPath) {
+        return null;
+      }
+      return {
+        label: folder.name || path.basename(fsPath) || fsPath,
+        path: fsPath,
+      };
+    })
+    .filter(Boolean);
 }
 
 function activate(context) {

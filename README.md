@@ -184,6 +184,8 @@ pnpm test
 
 In VSCode, run `Z-Library to NotebookLM: Open Workbench` from the command palette. If VSCode uses the wrong Python environment, set `zlibraryToNotebooklm.pythonPath` to the Python executable that has the project dependencies installed.
 
+When opened from VSCode, the search panel can also save the original downloaded file directly into the current workspace under `zlibrary-downloads/`. This workspace download does not split or upload the book, and existing files are not overwritten.
+
 ### Batch Processing
 
 ```bash
@@ -325,6 +327,7 @@ API endpoints served by the local workbench:
 - `POST /api/notebooks` with `{"title":"Notebook title"}`
 - `POST /api/upload` with `{"zlibrary_url":"...","notebook_id":"..."}` or `{"zlibrary_url":"...","notebook_title":"..."}`
 - `POST /api/download` with `{"zlibrary_url":"..."}` to download a search result into the local task workspace without uploading
+- `POST /api/download` with `{"zlibrary_url":"...","target":"vscode_workspace","workspace_root":"/path/to/workspace","folder_name":"zlibrary-downloads"}` to save the original file into a VSCode workspace folder without splitting or uploading
 - `GET /api/local-files`
 - `POST /api/process-local` with `{"task_id":"...","local_path":"...","strategy":"keep|replace|version"}` to convert/split a local workspace file without uploading. Existing processed sources require an explicit strategy.
 - `POST /api/upload-local` with `{"task_id":"...","local_path":"...","notebook_id":"..."}` or `{"task_id":"...","local_path":"...","notebook_title":"..."}`
